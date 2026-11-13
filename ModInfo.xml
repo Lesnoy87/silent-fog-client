@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<xml>
+  <Name value="SilentFogClient" />
+  <DisplayName value="Silent Fog — Client" />
+  <Description value="Клиентский туман: плотный на улице, слабый в домах и SafeZone. Без изменения ночи." />
+  <Author value="SilentFog" />
+  <Version value="1.0.0" />
+  <Website value="" />
+  <SkipWithAntiCheat value="true" />
+</xml>
