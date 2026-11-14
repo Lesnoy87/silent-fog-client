@@ -1,13 +1,28 @@
 # Silent Fog — Client (source)
 
-Client-side Harmony mod for 7 Days to Die 3.4.x.
+Client-side Harmony mod for 7 Days to Die 3.4.x. Version **1.8.2**.
 
 ## What it does
 
 - dense fog outside;
-- weak fog in POIs, houses and Safe Zones;
-- no night lighting;
-- no network, credential, file-system or EAC-related code.
+- weak fog in POIs, houses, trader safe zones and closed vehicles;
+- roof detection, so a room with a hole or balcony still counts as shelter;
+- smooth indoor/outdoor transitions;
+- optional ash storm in the burnt forest, tied to the vanilla storm;
+- host settings menu (`NumPad5` / `F7`) with four density sliders;
+- optional night fog softening when **DifRUST** is installed.
+
+No gameplay changes: zombies, loot, POIs and progression are untouched.
+No night lighting — that is a separate mod (DifRUST).
+
+## Settings sync
+
+The host menu applies its values to every player through the game's own
+`NetPackageModifyCVar` packet (`EntityBuffs.SetCustomVarNetwork`), using
+custom CVars with the `sf_` prefix. There is no custom network protocol,
+no sockets, no HTTP requests and no credential handling. Clients without the
+mod simply ignore the packets, and clients with the mod fall back to local
+defaults when the server has no fog mod installed.
 
 ## Requirements
 
@@ -36,8 +51,6 @@ Build output:
 Source\bin\Release\netstandard2.1\SilentFogClient.dll
 ```
 
-The compiled DLL is copied to `SilentFogClient.dll` by `build.ps1`.
-
 ## Install
 
 ```
@@ -49,7 +62,12 @@ Launch the game without EAC (DLL/Harmony mod).
 
 ## Source map
 
-- `Source/SilentFogClient.cs` — Harmony patches and fog density logic.
+- `Source/SilentFogClient.cs` — Harmony patches, fog density logic, host menu.
 - `Source/SilentFogClient.csproj` — build project.
 - `Source/build.ps1` — build helper.
 - `ModInfo.xml` — mod metadata.
+- `CHANGELOG.md` — version history.
+
+## Version
+
+`1.8.2` — see `CHANGELOG.md` for the full history.
