@@ -707,8 +707,8 @@ internal static class FogDensityLogic
     private const bool StrictShelter = true;
     private const int ShelterRayCount = 8;
     private const float ShelterRingRadius = 1.2f;
-    private const float ShelterRayLength = 8f;
-    private const float ShelterMinHeight = 1.5f;
+    private const float ShelterRayLength = 4f;
+    private const float ShelterMinHeight = 1f;
     private const float ShelterCoveredThreshold = 0.7f;
 
     private static int shelterFrame = -1;
