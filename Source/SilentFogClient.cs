@@ -230,6 +230,11 @@ internal static class FogSettings
     // Помогает в домах с проёмом/балконом, где isIndoorsCurrent врёт.
     public static bool UseShelter = true;
 
+    // Насколько отодвинуть начало тумана от игрока, в метрах.
+    // 0 — как в ваниле (20 м), 30 — туман начинается только в 50 м.
+    public const float MaxFogStartShift = 30f;
+    public static float FogStartShift = 0f;
+
     // CVar-имена синхронизации. Вандальные NetPackageModifyCVar, свой пакет
     // регистрировать не нужно — клиенты без мода просто ничего не заметят.
     public const string CvarEnabled = "sf_fog_on";
@@ -241,6 +246,7 @@ internal static class FogSettings
     public const string CvarStormDensity = "sf_storm_density";
     public const string CvarNightFog = "sf_night_fog";
     public const string CvarShelter = "sf_shelter_on";
+    public const string CvarFogStart = "sf_fog_start";
 
     private static bool dirty;
     private static float nextSend;
@@ -298,6 +304,7 @@ internal static class FogSettings
         StormDensity = Clamp01(buffs.GetCustomVar(CvarStormDensity));
         NightSoftening = Clamp01(buffs.GetCustomVar(CvarNightFog));
         UseShelter = buffs.GetCustomVar(CvarShelter) >= 0.5f;
+        FogStartShift = Mathf.Clamp01(buffs.GetCustomVar(CvarFogStart)) * MaxFogStartShift;
 
         // Внутри не должно быть плотнее, чем на улице.
         if (Indoor > Outdoor) Indoor = Outdoor;
@@ -351,6 +358,7 @@ internal static class FogSettings
             Send(player, CvarStormDensity, StormDensity);
             Send(player, CvarNightFog, NightSoftening);
             Send(player, CvarShelter, UseShelter ? 1f : 0f);
+            Send(player, CvarFogStart, FogStartShift / MaxFogStartShift);
         }
     }
 
@@ -372,6 +380,7 @@ internal static class FogSettings
         StormDensity = DefaultStormDensity;
         NightSoftening = DefaultNightSoftening;
         UseShelter = true;
+        FogStartShift = 0f;
         MarkDirty();
     }
 
@@ -438,6 +447,7 @@ internal static class FogSettings
                     case "storm_density": StormDensity = Clamp01(num); break;
                     case "night_fog": NightSoftening = Clamp01(num); break;
                     case "shelter": UseShelter = num >= 0.5f; break;
+                    case "fog_start": FogStartShift = Mathf.Clamp(num, 0f, MaxFogStartShift); break;
                 }
             }
         }
@@ -453,10 +463,10 @@ internal static class FogSettings
         {
             string text = string.Format(
                 System.Globalization.CultureInfo.InvariantCulture,
-                "enabled={0}\noutdoor={1}\nindoor={2}\nclosed={3}\nopen={4}\nstorm={5}\nstorm_density={6}\nnight_fog={7}\nshelter={8}\n",
+                "enabled={0}\noutdoor={1}\nindoor={2}\nclosed={3}\nopen={4}\nstorm={5}\nstorm_density={6}\nnight_fog={7}\nshelter={8}\nfog_start={9}\n",
                 Enabled ? "1" : "0", Outdoor, Indoor, ClosedVehicle, OpenVehicle,
                 StormEnabled ? "1" : "0", StormDensity, NightSoftening,
-                UseShelter ? "1" : "0");
+                UseShelter ? "1" : "0", FogStartShift);
             File.WriteAllText(SettingsPath, text);
         }
         catch
@@ -759,37 +769,48 @@ internal static class FogDensityLogic
         if (Time.frameCount == shelterFrame) return shelterCached;
         shelterFrame = Time.frameCount;
 
-        Vector3 head = player.position + new Vector3(0f, 1.72f, 0f);
+        World world = player.world;
+        if (world == null) return 0f;
+
+        Vector3 pos = player.position;
+        bool[] covered = new bool[5];
         int hits = 0;
-        int total = ShelterRayCount + 1;
 
-        for (int i = 0; i <= ShelterRayCount; i++)
+        // 5 точек в пределах «пятна» игрока: центр и четыре смещения по 0.35 м.
+        // Physics.Raycast в воксельном мире 7DTD не работает (свои коллайдеры),
+        // поэтому смотрим блоки напрямую через World.GetBlock.
+        for (int i = 0; i < 5; i++)
         {
-            Vector3 origin = head;
-            if (i < ShelterRayCount)
+            float ox = 0f;
+            float oz = 0f;
+            if (i == 1) ox = 0.35f;
+            else if (i == 2) ox = -0.35f;
+            else if (i == 3) oz = 0.35f;
+            else if (i == 4) oz = -0.35f;
+
+            Vector3i p = World.worldToBlockPos(new Vector3(pos.x + ox, pos.y + 0.2f, pos.z + oz));
+
+            for (int dy = 2; dy <= 8; dy++)
             {
-                float angle = Mathf.PI * 2f * i / ShelterRayCount;
-                origin.x += Mathf.Cos(angle) * ShelterRingRadius;
-                origin.z += Mathf.Sin(angle) * ShelterRingRadius;
+                BlockValue bv = world.GetBlock(p.x, p.y + dy, p.z);
+                if (bv.isair) continue;
+
+                covered[i] = true;
+                hits++;
+                break;
             }
-
-            RaycastHit hit;
-            if (!Physics.Raycast(origin, Vector3.up, out hit, ShelterRayLength,
-                    ~0, QueryTriggerInteraction.Ignore))
-            {
-                continue;
-            }
-
-            // Ближе 1.5 м — это полка, карниз или ступенька, а не крыша.
-            if (hit.distance < ShelterMinHeight) continue;
-
-            // У потолка нормаль вниз (y ≈ -1), у стены вбок (y ≈ 0).
-            if (hit.normal.y > -0.5f) continue;
-
-            hits++;
         }
 
-        shelterCached = (float)hits / total;
+        // Главное правило: если над самим игроком (центральная точка) неба нет,
+        // это укрытие. Если центр открыт — мы на улице, даже если края пятна
+        // задевают свес крыши или карниз у стены.
+        if (!covered[0])
+        {
+            shelterCached = 0f;
+            return shelterCached;
+        }
+
+        shelterCached = hits / 5f;
         return shelterCached;
     }
 
@@ -843,6 +864,31 @@ internal static class PoiFogPatch
     {
         float desired = FogDensityLogic.GetDesiredDensity();
         if (desired >= 0f) __result = desired;
+    }
+}
+
+// Сдвиг начала тумана в метрах. Дом в 3–5 м остаётся чистым, а снаружи
+// стена тумана начинается позже — ползунок «Начало тумана» в меню.
+[HarmonyPatch(typeof(SkyManager), "GetFogStart")]
+internal static class FogStartPatch
+{
+    private static void Postfix(ref float __result)
+    {
+        float shift = FogSettings.FogStartShift;
+        if (shift <= 0.01f) return;
+        __result += shift;
+    }
+}
+
+// Конец тумана двигаем вместе с началом, иначе полоса становится плоской.
+[HarmonyPatch(typeof(SkyManager), "GetFogEnd")]
+internal static class FogEndPatch
+{
+    private static void Postfix(ref float __result)
+    {
+        float shift = FogSettings.FogStartShift;
+        if (shift <= 0.01f) return;
+        __result += shift;
     }
 }
 
@@ -956,7 +1002,7 @@ public class FogMenuBehaviour : MonoBehaviour
     }
 
     private bool open;
-    private Rect windowRect = new Rect(60f, 36f, 480f, 690f);
+    private Rect windowRect = new Rect(60f, 36f, 480f, 745f);
 
     private Texture2D panelTex;
     private Texture2D accentTex;
@@ -1147,6 +1193,7 @@ public class FogMenuBehaviour : MonoBehaviour
 
         y = DrawRow(y, w, "Улица", ref FogSettings.Outdoor);
         y = DrawProtectionRow(y, w);
+        y = DrawFogStartRow(y, w);
 
         y = DrawRow(y, w, "Закрытый транспорт / Ark", ref FogSettings.ClosedVehicle);
         y = DrawRow(y, w, "Велик / мотоцикл", ref FogSettings.OpenVehicle);
@@ -1286,6 +1333,26 @@ public class FogMenuBehaviour : MonoBehaviour
         if (Mathf.Abs(newProtection - protection) > 0.001f)
         {
             FogSettings.Indoor = Mathf.Clamp01((1f - Mathf.Clamp01(newProtection)) * street);
+            FogSettings.MarkDirty();
+        }
+
+        return y + 50f;
+    }
+
+    // Насколько отодвинуть начало тумана от игрока (0–30 м).
+    private float DrawFogStartRow(float y, float w)
+    {
+        GUI.Label(new Rect(18f, y, w - 160f, 20f), "Начало тумана", labelStyle);
+        GUI.Label(new Rect(w - 110f, y, 92f, 20f),
+            Mathf.RoundToInt(FogSettings.FogStartShift) + " м", valueStyle);
+
+        float newShift = GUI.HorizontalSlider(
+            new Rect(18f, y + 22f, w - 36f, 18f),
+            FogSettings.FogStartShift, 0f, FogSettings.MaxFogStartShift);
+
+        if (Mathf.Abs(newShift - FogSettings.FogStartShift) > 0.05f)
+        {
+            FogSettings.FogStartShift = Mathf.Clamp(newShift, 0f, FogSettings.MaxFogStartShift);
             FogSettings.MarkDirty();
         }
 
