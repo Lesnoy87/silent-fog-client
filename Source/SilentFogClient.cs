@@ -251,6 +251,12 @@ internal static class FogSettings
     public const string CvarNightFog = "sf_night_fog";
     public const string CvarShelter = "sf_shelter_on";
 
+    // Настройки тумана по расстоянию и оттенок биома — тоже от хоста.
+    public const string CvarDistanceOn = "sf_distance_on";
+    public const string CvarDistanceStart = "sf_distance_start";
+    public const string CvarDistanceEnd = "sf_distance_end";
+    public const string CvarBiomeTint = "sf_biome_tint";
+
     private static bool dirty;
     private static float nextSend;
     private static float nextHeartbeat;
@@ -308,6 +314,17 @@ internal static class FogSettings
         NightSoftening = Clamp01(buffs.GetCustomVar(CvarNightFog));
         UseShelter = buffs.GetCustomVar(CvarShelter) >= 0.5f;
 
+        // Новые настройки: если хост их ещё не присылал (старый клиент),
+        // остаются текущие локальные значения.
+        if (buffs.HasCustomVar(CvarDistanceOn))
+            DistanceOn = buffs.GetCustomVar(CvarDistanceOn) >= 0.5f;
+        if (buffs.HasCustomVar(CvarDistanceStart))
+            DistanceStart = Mathf.Clamp(buffs.GetCustomVar(CvarDistanceStart), 2f, 60f);
+        if (buffs.HasCustomVar(CvarDistanceEnd))
+            DistanceEnd = Mathf.Clamp(buffs.GetCustomVar(CvarDistanceEnd), 20f, 200f);
+        if (buffs.HasCustomVar(CvarBiomeTint))
+            BiomeTint = Clamp01(buffs.GetCustomVar(CvarBiomeTint));
+
         // Внутри не должно быть плотнее, чем на улице.
         if (Indoor > Outdoor) Indoor = Outdoor;
     }
@@ -360,6 +377,10 @@ internal static class FogSettings
             Send(player, CvarStormDensity, StormDensity);
             Send(player, CvarNightFog, NightSoftening);
             Send(player, CvarShelter, UseShelter ? 1f : 0f);
+            Send(player, CvarDistanceOn, DistanceOn ? 1f : 0f);
+            Send(player, CvarDistanceStart, DistanceStart);
+            Send(player, CvarDistanceEnd, DistanceEnd);
+            Send(player, CvarBiomeTint, BiomeTint);
         }
     }
 
@@ -1006,7 +1027,7 @@ public class FogMenuBehaviour : MonoBehaviour
     }
 
     private bool open;
-    private Rect windowRect = new Rect(60f, 36f, 480f, 850f);
+    private Rect windowRect = new Rect(60f, 36f, 480f, 878f);
 
     private Texture2D panelTex;
     private Texture2D accentTex;
@@ -1218,6 +1239,19 @@ public class FogMenuBehaviour : MonoBehaviour
         GUI.Label(new Rect(18f, y, w - 36f, 20f),
             "Шейдер: " + DistanceFog.Status + " · частицы: " + DistanceFog.ParticleStatus, hintStyle);
         y += 22f;
+
+        {
+            bool was = FogSettings.DistanceOn;
+            GUI.enabled = host && FogSettings.Enabled;
+            FogSettings.DistanceOn = GUI.Toggle(
+                new Rect(18f, y, w - 36f, 22f),
+                FogSettings.DistanceOn,
+                "  Туман по расстоянию (свой шейдер)",
+                toggleStyle);
+            GUI.enabled = true;
+            if (was != FogSettings.DistanceOn) FogSettings.MarkDirty();
+        }
+        y += 28f;
 
         {
             bool was = FogSettings.UseShelter;

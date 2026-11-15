@@ -42,6 +42,26 @@ no sockets, no HTTP requests and no credential handling. Clients without the
 mod simply ignore the packets, and clients with the mod fall back to local
 defaults when the server has no fog mod installed.
 
+Everything in the menu is synced, including fog start/end distance, biome tint
+and the distance-fog toggle:
+
+| CVar | Setting |
+|---|---|
+| `sf_fog_on` | fog master switch |
+| `sf_fog_out` / `sf_fog_in` | outdoor / indoor strength |
+| `sf_shelter_on` | use roof detection |
+| `sf_fog_veh_closed` / `sf_fog_veh_open` | closed vehicle / bike strength |
+| `sf_storm_on` / `sf_storm_density` | ash storm |
+| `sf_night_fog` | night softening (with DifRUST) |
+| `sf_distance_on` | distance-based fog (own shader) |
+| `sf_distance_start` / `sf_distance_end` | fog start / end, metres |
+| `sf_biome_tint` | biome colour strength |
+
+The client menu is **read-only**: every slider is greyed out, values arrive from
+the host and the panel says «Настройки задаёт хост». Only the host can change
+them. Values are sent on change and refreshed every few seconds, so a player
+who joins later still gets the current settings.
+
 Settings are stored in `SilentFog.cfg` next to the game saves.
 
 ## Menu
@@ -54,8 +74,12 @@ Settings are stored in `SilentFog.cfg` next to the game saves.
 - «Оттенок биома» — how strongly the biome palette is applied (0–100%);
 - «Защита помещения / сейф-зоны» — how far the start moves under a roof;
 - closed vehicle / bike / motorcycle strengths;
+- «Туман по расстоянию (свой шейдер)» — turn the post-effect off to fall back
+  to the vanilla exponential fog (handy for troubleshooting);
 - ash storm toggle and density;
 - night fog softening (only with DifRUST).
+
+All rows are host-only; for clients the whole list is disabled.
 
 ## Requirements
 
