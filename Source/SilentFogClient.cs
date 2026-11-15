@@ -483,6 +483,12 @@ internal static class FogDensityLogic
     // Показывается в меню, чтобы было понятно, какой ползунок действует.
     public static string CurrentMode { get; private set; }
 
+    // Диагностика для меню: сколько процентов лучей укрытия попало в перекрытие.
+    public static float ShelterPercent
+    {
+        get { return Mathf.Clamp01(shelterCached) * 100f; }
+    }
+
     // Фактическая плотность, которую мод отдаёт в игру (для диагностики).
     public static float AppliedDensity { get; private set; }
 
@@ -531,7 +537,9 @@ internal static class FogDensityLogic
         // В доме/подвале туман остаётся, но слабый.
         // В домах с проёмом/балконом isIndoorsCurrent врёт, поэтому
         // дополнительно смотрим, есть ли блок над головой.
-        if (ShelterFactor(player) >= ShelterCoveredThreshold)
+        float shelter = ShelterFactor(player);
+
+        if (shelter >= 0.999f)
         {
             CurrentMode = player.isIndoorsCurrent ? "помещение" : "под крышей";
             return FogSettings.Indoor;
@@ -584,15 +592,32 @@ internal static class FogDensityLogic
             }
         }
 
+        float result;
         if (cachedPoiDistance < FadeEndRadius)
         {
             // SmoothStep вместо линейного: у самой сейф-зоны и на подходе
             // к улице туман меняется мягче, без ощущения «включилось».
             float t = Mathf.InverseLerp(SafeRadius, FadeEndRadius, cachedPoiDistance);
-            return Mathf.Lerp(FogSettings.Indoor, outdoor, Mathf.SmoothStep(0f, 1f, t));
+            result = Mathf.Lerp(FogSettings.Indoor, outdoor, Mathf.SmoothStep(0f, 1f, t));
+        }
+        else
+        {
+            result = outdoor;
         }
 
-        return outdoor;
+        // Мягкое укрытие: доля перекрытых лучей плавно подмешивает «домашнюю»
+        // плотность. В дверях и под свесом получается промежуточное значение,
+        // а не резкое «улица / дом».
+        if (shelter > 0.01f)
+        {
+            result = Mathf.Lerp(result, FogSettings.Indoor, Mathf.SmoothStep(0f, 1f, shelter));
+            if (shelter >= 0.5f)
+            {
+                CurrentMode = player.isIndoorsCurrent ? "помещение" : "под крышей";
+            }
+        }
+
+        return result;
     }
 
     private static float smoothed = -1f;
@@ -707,7 +732,7 @@ internal static class FogDensityLogic
     private const bool StrictShelter = true;
     private const int ShelterRayCount = 8;
     private const float ShelterRingRadius = 1.2f;
-    private const float ShelterRayLength = 4f;
+    private const float ShelterRayLength = 10f;
     private const float ShelterMinHeight = 1f;
     private const float ShelterCoveredThreshold = 0.7f;
 
@@ -1129,9 +1154,10 @@ public class FogMenuBehaviour : MonoBehaviour
         y += 2f;
         GUI.Label(
             new Rect(18f, y, w - 36f, 20f),
-            string.Format("Сейчас: {0} · плотность {1}%",
+            string.Format("Сейчас: {0} · плотность {1}% · укрытие {2}%",
                 FogDensityLogic.CurrentMode ?? "—",
-                Mathf.RoundToInt(FogDensityLogic.AppliedDensity * 100f)),
+                Mathf.RoundToInt(FogDensityLogic.AppliedDensity * 100f),
+                Mathf.RoundToInt(FogDensityLogic.ShelterPercent)),
             hintStyle
         );
         y += 22f;
