@@ -1033,6 +1033,8 @@ public class FogMenuBehaviour : MonoBehaviour
     private Texture2D accentTex;
     private Texture2D dimTex;
     private Texture2D rowTex;
+    private Texture2D checkOffTex;
+    private Texture2D checkOnTex;
 
     private GUIStyle titleStyle;
     private GUIStyle labelStyle;
@@ -1243,11 +1245,10 @@ public class FogMenuBehaviour : MonoBehaviour
         {
             bool was = FogSettings.DistanceOn;
             GUI.enabled = host && FogSettings.Enabled;
-            FogSettings.DistanceOn = GUI.Toggle(
+            FogSettings.DistanceOn = DrawToggle(
                 new Rect(18f, y, w - 36f, 22f),
                 FogSettings.DistanceOn,
-                "  Туман по расстоянию (свой шейдер)",
-                toggleStyle);
+                "Туман по расстоянию (свой шейдер)");
             GUI.enabled = true;
             if (was != FogSettings.DistanceOn) FogSettings.MarkDirty();
         }
@@ -1256,12 +1257,10 @@ public class FogMenuBehaviour : MonoBehaviour
         {
             bool was = FogSettings.UseShelter;
             GUI.enabled = host;
-            FogSettings.UseShelter = GUI.Toggle(
+            FogSettings.UseShelter = DrawToggle(
                 new Rect(18f, y, w - 36f, 22f),
                 FogSettings.UseShelter,
-                "  Считать укрытием место под крышей",
-                toggleStyle
-            );
+                "Считать укрытием место под крышей");
             GUI.enabled = true;
             if (was != FogSettings.UseShelter) FogSettings.MarkDirty();
         }
@@ -1429,6 +1428,8 @@ public class FogMenuBehaviour : MonoBehaviour
         accentTex = SolidTexture(new Color(0.45f, 0.68f, 0.8f, 1f));
         rowTex = SolidTexture(new Color(0.25f, 0.32f, 0.36f, 0.9f));
         dimTex = SolidTexture(new Color(0f, 0f, 0f, 0.5f));
+        checkOffTex = CheckboxTexture(false);
+        checkOnTex = CheckboxTexture(true);
 
         titleStyle = new GUIStyle(GUI.skin.label)
         {
@@ -1502,6 +1503,74 @@ public class FogMenuBehaviour : MonoBehaviour
             hover = { textColor = new Color(1f, 1f, 1f) },
             onHover = { textColor = new Color(1f, 1f, 1f) }
         };
+    }
+
+    // Свой чекбокс: GUI.skin.toggle в этой игре для части состояний не рисует
+    // птичку, из-за чего включённая настройка выглядела выключенной.
+    private bool DrawToggle(Rect rect, bool value, string text)
+    {
+        if (GUI.Button(rect, GUIContent.none, GUIStyle.none))
+        {
+            value = !value;
+        }
+
+        Color old = GUI.color;
+        if (!GUI.enabled) GUI.color = new Color(1f, 1f, 1f, 0.45f);
+
+        const float box = 18f;
+        GUI.DrawTexture(
+            new Rect(rect.x, rect.y + (rect.height - box) * 0.5f, box, box),
+            value ? checkOnTex : checkOffTex,
+            ScaleMode.StretchToFill);
+
+        GUI.Label(new Rect(rect.x + 26f, rect.y, rect.width - 26f, rect.height), text, toggleStyle);
+
+        GUI.color = old;
+        return value;
+    }
+
+    private static Texture2D CheckboxTexture(bool on)
+    {
+        const int size = 18;
+        Texture2D tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+
+        Color bg = new Color(0.07f, 0.09f, 0.10f, 1f);
+        Color border = new Color(0.30f, 0.38f, 0.42f, 1f);
+        Color mark = new Color(0.55f, 0.80f, 0.95f, 1f);
+
+        for (int x = 0; x < size; x++)
+        {
+            for (int y = 0; y < size; y++)
+            {
+                bool edge = x == 0 || y == 0 || x == size - 1 || y == size - 1;
+                tex.SetPixel(x, y, edge ? border : bg);
+            }
+        }
+
+        if (on)
+        {
+            // Галочка: короткий штрих вниз, длинный — вверх-вправо.
+            for (int t = 0; t < 2; t++)
+            {
+                for (int i = 0; i <= 3; i++)
+                {
+                    int x = 4 + i;
+                    int y = 7 - i + t;
+                    if (x >= 0 && x < size && y >= 0 && y < size) tex.SetPixel(x, y, mark);
+                }
+                for (int i = 0; i <= 6; i++)
+                {
+                    int x = 7 + i;
+                    int y = 4 + i + t;
+                    if (x >= 0 && x < size && y >= 0 && y < size) tex.SetPixel(x, y, mark);
+                }
+            }
+        }
+
+        tex.wrapMode = TextureWrapMode.Clamp;
+        tex.filterMode = FilterMode.Point;
+        tex.Apply();
+        return tex;
     }
 
     private static Texture2D SolidTexture(Color color)
