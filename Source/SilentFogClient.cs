@@ -531,7 +531,7 @@ internal static class FogDensityLogic
         // В доме/подвале туман остаётся, но слабый.
         // В домах с проёмом/балконом isIndoorsCurrent врёт, поэтому
         // дополнительно смотрим, есть ли блок над головой.
-        if (ShelterFactor(player) >= 0.999f)
+        if (ShelterFactor(player) >= ShelterCoveredThreshold)
         {
             CurrentMode = player.isIndoorsCurrent ? "помещение" : "под крышей";
             return FogSettings.Indoor;
@@ -699,13 +699,73 @@ internal static class FogDensityLogic
         }
     }
 
+    // Строгая проверка укрытия.
+    // Раньше использовался player.shelterAbovePercent, который считал укрытием
+    // даже стену, к которой игрок прислонился (луч упирался в блок стены).
+    // Теперь стреляем кольцом лучей вверх и засчитываем только горизонтальные
+    // поверхности: у потолка нормаль смотрит вниз, у стены — вбок.
+    private const bool StrictShelter = true;
+    private const int ShelterRayCount = 8;
+    private const float ShelterRingRadius = 1.2f;
+    private const float ShelterRayLength = 8f;
+    private const float ShelterMinHeight = 1.5f;
+    private const float ShelterCoveredThreshold = 0.7f;
+
+    private static int shelterFrame = -1;
+    private static float shelterCached;
+
     // Крыша над головой: в домах с проёмом/балконом isIndoorsCurrent
     // может быть false, хотя игрок стоит под крышей.
     private static float ShelterFactor(EntityPlayerLocal player)
     {
         if (player.isIndoorsCurrent) return 1f;
         if (!FogSettings.UseShelter) return 0f;
-        return player.shelterAbovePercent >= 0.5f ? 1f : 0f;
+
+        if (!StrictShelter)
+        {
+            return player.shelterAbovePercent >= 0.5f ? 1f : 0f;
+        }
+
+        return ShelterCoverage(player);
+    }
+
+    private static float ShelterCoverage(EntityPlayerLocal player)
+    {
+        if (Time.frameCount == shelterFrame) return shelterCached;
+        shelterFrame = Time.frameCount;
+
+        Vector3 head = player.position + new Vector3(0f, 1.72f, 0f);
+        int hits = 0;
+        int total = ShelterRayCount + 1;
+
+        for (int i = 0; i <= ShelterRayCount; i++)
+        {
+            Vector3 origin = head;
+            if (i < ShelterRayCount)
+            {
+                float angle = Mathf.PI * 2f * i / ShelterRayCount;
+                origin.x += Mathf.Cos(angle) * ShelterRingRadius;
+                origin.z += Mathf.Sin(angle) * ShelterRingRadius;
+            }
+
+            RaycastHit hit;
+            if (!Physics.Raycast(origin, Vector3.up, out hit, ShelterRayLength,
+                    ~0, QueryTriggerInteraction.Ignore))
+            {
+                continue;
+            }
+
+            // Ближе 1.5 м — это полка, карниз или ступенька, а не крыша.
+            if (hit.distance < ShelterMinHeight) continue;
+
+            // У потолка нормаль вниз (y ≈ -1), у стены вбок (y ≈ 0).
+            if (hit.normal.y > -0.5f) continue;
+
+            hits++;
+        }
+
+        shelterCached = (float)hits / total;
+        return shelterCached;
     }
 
     private static float CalculateNearestPoiDistance(EntityPlayerLocal player)
