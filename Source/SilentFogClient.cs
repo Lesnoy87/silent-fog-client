@@ -236,6 +236,9 @@ internal static class FogSettings
     public static float DistanceStart = 12f;   // метров
     public static float DistanceEnd = 80f;     // метров
 
+    // Насколько сильно подкрашивать туман под биом (0 — ванильный цвет).
+    public static float BiomeTint = 0.55f;
+
     // CVar-имена синхронизации. Вандальные NetPackageModifyCVar, свой пакет
     // регистрировать не нужно — клиенты без мода просто ничего не заметят.
     public const string CvarEnabled = "sf_fog_on";
@@ -381,6 +384,7 @@ internal static class FogSettings
         DistanceOn = true;
         DistanceStart = 12f;
         DistanceEnd = 80f;
+        BiomeTint = 0.55f;
         MarkDirty();
     }
 
@@ -450,6 +454,7 @@ internal static class FogSettings
                     case "distance": DistanceOn = num >= 0.5f; break;
                     case "distance_start": DistanceStart = Mathf.Clamp(num, 2f, 60f); break;
                     case "distance_end": DistanceEnd = Mathf.Clamp(num, 20f, 200f); break;
+                    case "biome_tint": BiomeTint = Mathf.Clamp01(num); break;
                 }
             }
         }
@@ -465,11 +470,11 @@ internal static class FogSettings
         {
             string text = string.Format(
                 System.Globalization.CultureInfo.InvariantCulture,
-                "enabled={0}\noutdoor={1}\nindoor={2}\nclosed={3}\nopen={4}\nstorm={5}\nstorm_density={6}\nnight_fog={7}\nshelter={8}\ndistance={9}\ndistance_start={10}\ndistance_end={11}\n",
+                "enabled={0}\noutdoor={1}\nindoor={2}\nclosed={3}\nopen={4}\nstorm={5}\nstorm_density={6}\nnight_fog={7}\nshelter={8}\ndistance={9}\ndistance_start={10}\ndistance_end={11}\nbiome_tint={12}\n",
                 Enabled ? "1" : "0", Outdoor, Indoor, ClosedVehicle, OpenVehicle,
                 StormEnabled ? "1" : "0", StormDensity, NightSoftening,
                 UseShelter ? "1" : "0",
-                DistanceOn ? "1" : "0", DistanceStart, DistanceEnd);
+                DistanceOn ? "1" : "0", DistanceStart, DistanceEnd, BiomeTint);
             File.WriteAllText(SettingsPath, text);
         }
         catch
@@ -1001,7 +1006,7 @@ public class FogMenuBehaviour : MonoBehaviour
     }
 
     private bool open;
-    private Rect windowRect = new Rect(60f, 36f, 480f, 800f);
+    private Rect windowRect = new Rect(60f, 36f, 480f, 850f);
 
     private Texture2D panelTex;
     private Texture2D accentTex;
@@ -1193,6 +1198,7 @@ public class FogMenuBehaviour : MonoBehaviour
         y = DrawRow(y, w, "Сила тумана", ref FogSettings.Outdoor);
         y = DrawRangeRow(y, w, "Начало тумана, м", ref FogSettings.DistanceStart, 2f, 60f);
         y = DrawRangeRow(y, w, "Конец тумана, м", ref FogSettings.DistanceEnd, 20f, 200f);
+        y = DrawRow(y, w, "Оттенок биома", ref FogSettings.BiomeTint);
         y = DrawProtectionRow(y, w);
 
         y = DrawRow(y, w, "Закрытый транспорт / Ark", ref FogSettings.ClosedVehicle);
@@ -1210,7 +1216,7 @@ public class FogMenuBehaviour : MonoBehaviour
         y += 20f;
 
         GUI.Label(new Rect(18f, y, w - 36f, 20f),
-            "Шейдер: " + DistanceFog.Status, hintStyle);
+            "Шейдер: " + DistanceFog.Status + " · частицы: " + DistanceFog.ParticleStatus, hintStyle);
         y += 22f;
 
         {

@@ -25,7 +25,7 @@ if (-not (Test-Path $assetsDir)) {
 New-Item -ItemType Directory -Force -Path $assetsDir | Out-Null
 New-Item -ItemType Directory -Force -Path $editorDir | Out-Null
 
-Copy-Item (Join-Path $PSScriptRoot "Assets\SilentFogFog.shader") $assetsDir -Force
+Copy-Item (Join-Path $PSScriptRoot "Assets\*.shader") $assetsDir -Force
 Copy-Item (Join-Path $PSScriptRoot "Assets\Editor\SilentFogBundleBuilder.cs") $editorDir -Force
 
 Write-Host "Building AssetBundle..."
@@ -39,8 +39,19 @@ if (-not (Test-Path $bundle)) {
 
 $target = Join-Path $ModDir "AssetBundles"
 New-Item -ItemType Directory -Force -Path $target | Out-Null
-Copy-Item $bundle $target -Force
 
 $installed = Join-Path $target "silentfogfog"
+try {
+    Copy-Item $bundle $target -Force -ErrorAction Stop
+} catch {
+    Write-Host "COPY FAILED (game running? file locked): $($_.Exception.Message)"
+    exit 3
+}
+
+if ((Get-FileHash $bundle).Hash -ne (Get-FileHash $installed).Hash) {
+    Write-Host "COPY VERIFY FAILED: installed bundle differs from build"
+    exit 4
+}
+
 $kb = [math]::Round((Get-Item $installed).Length / 1KB)
-Write-Host "OK: $installed ($kb KB)"
+Write-Host "OK: $installed ($kb KB, hash verified)"

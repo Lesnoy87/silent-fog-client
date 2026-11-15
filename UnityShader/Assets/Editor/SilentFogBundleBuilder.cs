@@ -8,6 +8,7 @@ using UnityEngine;
 public static class SilentFogBundleBuilder
 {
     private const string ShaderPath = "Assets/SilentFogFog.shader";
+    private const string ParticleShaderPath = "Assets/SilentFogParticle.shader";
     private const string BundleName = "silentfogfog";
     private const string OutDir = "Build";
 
@@ -30,10 +31,18 @@ public static class SilentFogBundleBuilder
             return;
         }
 
+        var particleShader = AssetDatabase.LoadAssetAtPath<Shader>(ParticleShaderPath);
+        if (particleShader == null)
+        {
+            Debug.LogError("[SilentFog] Не найден шейдер " + ParticleShaderPath);
+            if (Application.isBatchMode) EditorApplication.Exit(2);
+            return;
+        }
+
         var build = new AssetBundleBuild
         {
             assetBundleName = BundleName,
-            assetNames = new[] { ShaderPath }
+            assetNames = new[] { ShaderPath, ParticleShaderPath }
         };
 
         BuildPipeline.BuildAssetBundles(

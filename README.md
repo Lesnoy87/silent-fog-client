@@ -1,19 +1,37 @@
 # Silent Fog — Client (source)
 
-Client-side Harmony mod for 7 Days to Die 3.4.x. Version **1.8.2**.
+Client-side Harmony mod for 7 Days to Die 3.4.x. Version **1.11.0**.
 
 ## What it does
 
-- dense fog outside;
-- weak fog in POIs, houses, trader safe zones and closed vehicles;
+- **distance-based fog**: a post-effect with a depth buffer, so the fog starts
+  at a set distance and never reaches objects closer than that;
+- indoor spaces stay clear while the fog is still visible through windows;
+- **biome fog colour**: desert is warm sand, snow is cold blue, wasteland is
+  ochre, radiated is toxic green, burnt forest is ash; pine forest, plains,
+  city and caves keep the vanilla colour;
 - roof detection, so a room with a hole or balcony still counts as shelter;
 - smooth indoor/outdoor transitions;
 - optional ash storm in the burnt forest, tied to the vanilla storm;
-- host settings menu (`NumPad5` / `F7`) with four density sliders;
+- host settings menu (`NumPad5` / `F7`);
 - optional night fog softening when **DifRUST** is installed.
 
 No gameplay changes: zombies, loot, POIs and progression are untouched.
 No night lighting — that is a separate mod (DifRUST).
+
+## How the fog works
+
+The game's own fog is exponential and dimensionless: it always clings to the
+camera. This mod replaces it with a camera image effect that reads the depth
+buffer and blends the fog colour with `smoothstep(start, end, depth)`.
+
+The shader lives in an AssetBundle (`AssetBundles/silentfogfog`) built with
+**Unity 2022.3.62f2** — the exact engine version of the game. If the bundle is
+missing or fails to load, the mod falls back to the vanilla exponential fog
+instead of breaking.
+
+Vanilla fog density is forced to zero while the effect is active, so the two
+never stack.
 
 ## Settings sync
 
@@ -23,6 +41,21 @@ custom CVars with the `sf_` prefix. There is no custom network protocol,
 no sockets, no HTTP requests and no credential handling. Clients without the
 mod simply ignore the packets, and clients with the mod fall back to local
 defaults when the server has no fog mod installed.
+
+Settings are stored in `SilentFog.cfg` next to the game saves.
+
+## Menu
+
+`NumPad5` or `F7`. Current rows:
+
+- «Сила тумана» — overall fog strength;
+- «Начало тумана, м» — where the fog starts (default 12 m);
+- «Конец тумана, м» — where it becomes solid (default 80 m);
+- «Оттенок биома» — how strongly the biome palette is applied (0–100%);
+- «Защита помещения / сейф-зоны» — how far the start moves under a roof;
+- closed vehicle / bike / motorcycle strengths;
+- ash storm toggle and density;
+- night fog softening (only with DifRUST).
 
 ## Requirements
 
@@ -51,23 +84,45 @@ Build output:
 Source\bin\Release\netstandard2.1\SilentFogClient.dll
 ```
 
+### Shader bundle
+
+The shaders are built separately:
+
+```powershell
+cd UnityShader
+.\build-bundle.ps1
+```
+
+The script creates a Unity project if needed, builds
+`AssetBundles/silentfogfog`, verifies the file hash and installs it into the
+mod folder. The game must be closed: AssetBundle files are locked while the
+game is running.
+
 ## Install
 
-```
+```text
 %APPDATA%\7DaysToDie\Mods\SilentFogClient\ModInfo.xml
 %APPDATA%\7DaysToDie\Mods\SilentFogClient\SilentFogClient.dll
+%APPDATA%\7DaysToDie\Mods\SilentFogClient\AssetBundles\silentfogfog
 ```
+
+The `AssetBundles` folder is required for the distance fog. Without it the mod
+still works, but on the vanilla exponential fog.
 
 Launch the game without EAC (DLL/Harmony mod).
 
 ## Source map
 
 - `Source/SilentFogClient.cs` — Harmony patches, fog density logic, host menu.
+- `Source/DistanceFog.cs` — the image effect and its material.
+- `Source/BiomeFog.cs` — biome palette and blending.
 - `Source/SilentFogClient.csproj` — build project.
 - `Source/build.ps1` — build helper.
+- `UnityShader/Assets/*.shader` — fog and particle shaders.
+- `UnityShader/build-bundle.ps1` — AssetBundle builder.
 - `ModInfo.xml` — mod metadata.
 - `CHANGELOG.md` — version history.
 
 ## Version
 
-`1.8.2` — see `CHANGELOG.md` for the full history.
+`1.11.0` — see `CHANGELOG.md` for the full history.
