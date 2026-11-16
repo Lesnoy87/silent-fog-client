@@ -56,6 +56,8 @@ and the distance-fog toggle:
 | `sf_distance_on` | distance-based fog (own shader) |
 | `sf_distance_start` / `sf_distance_end` | fog start / end, metres |
 | `sf_biome_tint` | biome colour strength |
+| `sf_live_on` | fog breathing (experimental) |
+| `sf_live_amount` | breathing amplitude, 0–1 |
 
 The client menu is **read-only**: every slider is greyed out, values arrive from
 the host and the panel says «Настройки задаёт хост». Only the host can change
@@ -68,6 +70,7 @@ Settings are stored in `SilentFog.cfg` next to the game saves.
 
 `NumPad5` or `F7`. Current rows:
 
+- preset buttons — «Лёгкий», «Средний», «Плотный», «Шторм»;
 - «Сила тумана» — overall fog strength;
 - «Начало тумана, м» — where the fog starts (default 12 m);
 - «Конец тумана, м» — where it becomes solid (default 80 m);
@@ -76,6 +79,8 @@ Settings are stored in `SilentFog.cfg` next to the game saves.
 - closed vehicle / bike / motorcycle strengths;
 - «Туман по расстоянию (свой шейдер)» — turn the post-effect off to fall back
   to the vanilla exponential fog (handy for troubleshooting);
+- «ЭКСПЕРИМЕНТ · ДЫХАНИЕ ТУМАНА» — toggle plus amplitude: the fog edge drifts
+  up to ±8 m and density dips up to −35%, so the fog seems to breathe;
 - ash storm toggle and density;
 - night fog softening (only with DifRUST).
 

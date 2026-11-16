@@ -239,6 +239,11 @@ internal static class FogSettings
     // Насколько сильно подкрашивать туман под биом (0 — ванильный цвет).
     public static float BiomeTint = 0.55f;
 
+    // «Живость»: кромка тумана медленно дышит и иногда накатывает порывами.
+    // Считается по шуму Перлина в C#, шейдер не меняется вообще.
+    public static bool LiveOn = true;
+    public static float LiveAmount = 0.35f;   // 0..1: кромка ±8 м, плотность до −35%
+
     // CVar-имена синхронизации. Вандальные NetPackageModifyCVar, свой пакет
     // регистрировать не нужно — клиенты без мода просто ничего не заметят.
     public const string CvarEnabled = "sf_fog_on";
@@ -256,6 +261,8 @@ internal static class FogSettings
     public const string CvarDistanceStart = "sf_distance_start";
     public const string CvarDistanceEnd = "sf_distance_end";
     public const string CvarBiomeTint = "sf_biome_tint";
+    public const string CvarLiveOn = "sf_live_on";
+    public const string CvarLiveAmount = "sf_live_amount";
 
     private static bool dirty;
     private static float nextSend;
@@ -324,6 +331,10 @@ internal static class FogSettings
             DistanceEnd = Mathf.Clamp(buffs.GetCustomVar(CvarDistanceEnd), 20f, 200f);
         if (buffs.HasCustomVar(CvarBiomeTint))
             BiomeTint = Clamp01(buffs.GetCustomVar(CvarBiomeTint));
+        if (buffs.HasCustomVar(CvarLiveOn))
+            LiveOn = buffs.GetCustomVar(CvarLiveOn) >= 0.5f;
+        if (buffs.HasCustomVar(CvarLiveAmount))
+            LiveAmount = Clamp01(buffs.GetCustomVar(CvarLiveAmount));
 
         // Внутри не должно быть плотнее, чем на улице.
         if (Indoor > Outdoor) Indoor = Outdoor;
@@ -381,6 +392,8 @@ internal static class FogSettings
             Send(player, CvarDistanceStart, DistanceStart);
             Send(player, CvarDistanceEnd, DistanceEnd);
             Send(player, CvarBiomeTint, BiomeTint);
+            Send(player, CvarLiveOn, LiveOn ? 1f : 0f);
+            Send(player, CvarLiveAmount, LiveAmount);
         }
     }
 
@@ -406,6 +419,46 @@ internal static class FogSettings
         DistanceStart = 12f;
         DistanceEnd = 80f;
         BiomeTint = 0.55f;
+        LiveOn = true;
+        LiveAmount = 0.35f;
+        MarkDirty();
+    }
+
+    // Готовые наборы настроек: меняют сразу группу ползунков.
+    public static void ApplyPreset(int index)
+    {
+        switch (index)
+        {
+            case 0: // лёгкий
+                Outdoor = 0.45f;
+                DistanceStart = 20f;
+                DistanceEnd = 60f;
+                BiomeTint = 0.35f;
+                break;
+
+            case 1: // средний (дефолт)
+                Outdoor = DefaultOutdoor;
+                DistanceStart = 12f;
+                DistanceEnd = 80f;
+                BiomeTint = 0.55f;
+                break;
+
+            case 2: // плотный
+                Outdoor = 0.90f;
+                DistanceStart = 8f;
+                DistanceEnd = 50f;
+                BiomeTint = 0.70f;
+                break;
+
+            case 3: // шторм
+                Outdoor = 1.00f;
+                DistanceStart = 5f;
+                DistanceEnd = 40f;
+                BiomeTint = 0.80f;
+                StormDensity = 1.00f;
+                break;
+        }
+
         MarkDirty();
     }
 
@@ -476,6 +529,8 @@ internal static class FogSettings
                     case "distance_start": DistanceStart = Mathf.Clamp(num, 2f, 60f); break;
                     case "distance_end": DistanceEnd = Mathf.Clamp(num, 20f, 200f); break;
                     case "biome_tint": BiomeTint = Mathf.Clamp01(num); break;
+                    case "live": LiveOn = num >= 0.5f; break;
+                    case "live_amount": LiveAmount = Clamp01(num); break;
                 }
             }
         }
@@ -491,11 +546,12 @@ internal static class FogSettings
         {
             string text = string.Format(
                 System.Globalization.CultureInfo.InvariantCulture,
-                "enabled={0}\noutdoor={1}\nindoor={2}\nclosed={3}\nopen={4}\nstorm={5}\nstorm_density={6}\nnight_fog={7}\nshelter={8}\ndistance={9}\ndistance_start={10}\ndistance_end={11}\nbiome_tint={12}\n",
+                "enabled={0}\noutdoor={1}\nindoor={2}\nclosed={3}\nopen={4}\nstorm={5}\nstorm_density={6}\nnight_fog={7}\nshelter={8}\ndistance={9}\ndistance_start={10}\ndistance_end={11}\nbiome_tint={12}\nlive={13}\nlive_amount={14}\n",
                 Enabled ? "1" : "0", Outdoor, Indoor, ClosedVehicle, OpenVehicle,
                 StormEnabled ? "1" : "0", StormDensity, NightSoftening,
                 UseShelter ? "1" : "0",
-                DistanceOn ? "1" : "0", DistanceStart, DistanceEnd, BiomeTint);
+                DistanceOn ? "1" : "0", DistanceStart, DistanceEnd, BiomeTint,
+                LiveOn ? "1" : "0", LiveAmount);
             File.WriteAllText(SettingsPath, text);
         }
         catch
@@ -1029,6 +1085,11 @@ public class FogMenuBehaviour : MonoBehaviour
     private bool open;
     private Rect windowRect = new Rect(60f, 36f, 480f, 878f);
 
+    // Прокрутка тела панели: настроек больше, чем помещается в окно.
+    private Vector2 scrollPos;
+    private const float ScrollBodyTop = 56f;
+    private const float ScrollContentHeight = 1250f;
+
     private Texture2D panelTex;
     private Texture2D accentTex;
     private Texture2D dimTex;
@@ -1191,7 +1252,14 @@ public class FogMenuBehaviour : MonoBehaviour
 
         y += 32f;
         GUI.DrawTexture(new Rect(18f, y, w - 36f, 1f), rowTex, ScaleMode.StretchToFill);
-        y += 12f;
+
+        // Ниже шапки — прокручиваемая область: настроек стало больше, чем влезает.
+        scrollPos = GUI.BeginScrollView(
+            new Rect(0f, ScrollBodyTop, w, h - ScrollBodyTop),
+            scrollPos,
+            new Rect(0f, 0f, w - 18f, ScrollContentHeight));
+
+        y = 0f;
 
         bool host = FogSettings.IsHost;
 
@@ -1218,9 +1286,52 @@ public class FogMenuBehaviour : MonoBehaviour
         y += 40f;
         GUI.enabled = host && FogSettings.Enabled;
 
+        // --- пресеты ---
+        GUI.Label(new Rect(18f, y, w - 36f, 20f), "ПРЕСЕТЫ", sectionStyle);
+        y += 22f;
+
+        {
+            float bw = (w - 36f - 12f) / 4f;
+            if (GUI.Button(new Rect(18f, y, bw, 26f), "Лёгкий", buttonStyle))
+                FogSettings.ApplyPreset(0);
+            if (GUI.Button(new Rect(18f + bw + 4f, y, bw, 26f), "Средний", buttonStyle))
+                FogSettings.ApplyPreset(1);
+            if (GUI.Button(new Rect(18f + (bw + 4f) * 2f, y, bw, 26f), "Плотный", buttonStyle))
+                FogSettings.ApplyPreset(2);
+            if (GUI.Button(new Rect(18f + (bw + 4f) * 3f, y, bw, 26f), "Шторм", buttonStyle))
+                FogSettings.ApplyPreset(3);
+        }
+        y += 34f;
+
         y = DrawRow(y, w, "Сила тумана", ref FogSettings.Outdoor);
         y = DrawRangeRow(y, w, "Начало тумана, м", ref FogSettings.DistanceStart, 2f, 60f);
         y = DrawRangeRow(y, w, "Конец тумана, м", ref FogSettings.DistanceEnd, 20f, 200f);
+
+        // Помечено как эксперимент: эффект есть, но вкус у всех разный.
+        GUI.Label(new Rect(18f, y, w - 36f, 18f), "ЭКСПЕРИМЕНТ · ДЫХАНИЕ ТУМАНА", sectionStyle);
+        y += 20f;
+
+        {
+            bool was = FogSettings.LiveOn;
+            FogSettings.LiveOn = DrawToggle(
+                new Rect(18f, y, w - 36f, 22f),
+                FogSettings.LiveOn,
+                "Живость тумана (дыхание)");
+            if (was != FogSettings.LiveOn) FogSettings.MarkDirty();
+        }
+        y += 28f;
+
+        {
+            bool wasEnabled = GUI.enabled;
+            GUI.enabled = host && FogSettings.Enabled && FogSettings.LiveOn;
+            y = DrawRow(y, w, "Амплитуда дыхания (в эксперименте)", ref FogSettings.LiveAmount);
+            GUI.enabled = wasEnabled;
+
+            GUI.Label(new Rect(18f, y - 6f, w - 36f, 18f),
+                "Плотность гуляет до −35% на 100%. Синхронизируется от хоста.", hintStyle);
+            y += 16f;
+        }
+
         y = DrawRow(y, w, "Оттенок биома", ref FogSettings.BiomeTint);
         y = DrawProtectionRow(y, w);
 
@@ -1230,10 +1341,11 @@ public class FogMenuBehaviour : MonoBehaviour
         y += 2f;
         GUI.Label(
             new Rect(18f, y, w - 36f, 20f),
-            string.Format("Сейчас: {0} · сила {1}% · укрытие {2}%",
+            string.Format("Сейчас: {0} · сила {1}% · укрытие {2}% · дыхание {3}%",
                 FogDensityLogic.CurrentMode ?? "—",
                 Mathf.RoundToInt(Mathf.Clamp01(FogDensityLogic.AppliedDensity) * 100f),
-                Mathf.RoundToInt(FogDensityLogic.ShelterPercent)),
+                Mathf.RoundToInt(FogDensityLogic.ShelterPercent),
+                Mathf.RoundToInt(Mathf.Clamp01(DistanceFog.LiveFactor) * 100f)),
             hintStyle
         );
         y += 20f;
@@ -1341,10 +1453,11 @@ public class FogMenuBehaviour : MonoBehaviour
         {
             FogSettings.ResetToDefaults();
         }
+        bool closeRequested = false;
         if (GUI.Button(new Rect(178f, y, w - 196f, 30f), "Закрыть", buttonStyle))
         {
             Close();
-            return;
+            closeRequested = true;
         }
 
         y += 38f;
@@ -1356,7 +1469,10 @@ public class FogMenuBehaviour : MonoBehaviour
             hintStyle
         );
 
-        GUI.DragWindow(new Rect(0f, 0f, w, 40f));
+        GUI.EndScrollView();
+        if (closeRequested) return;
+
+        GUI.DragWindow(new Rect(0f, 0f, w, ScrollBodyTop - 12f));
     }
 
     // Защита помещения: 100% — тумана в доме нет, 0% — как на улице.

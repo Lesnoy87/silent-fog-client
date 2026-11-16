@@ -100,6 +100,9 @@ internal static class DistanceFog
 
     public static string ParticleStatus { get; private set; } = "—";
 
+    // Текущий коэффициент «дыхания» (1.0 — без изменений). Для меню.
+    public static float LiveFactor { get; private set; } = 1f;
+
     public static void Tick(EntityPlayerLocal player)
     {
         if (!loadTried) TryLoad();
@@ -161,7 +164,21 @@ internal static class DistanceFog
         if (effect == null) return;
 
         float span = Mathf.Max(FogSettings.DistanceEnd - FogSettings.DistanceStart, 10f);
-        float target = FogSettings.DistanceStart + indoorPush * Mathf.Clamp01(shelter);
+
+        // «Живость»: два независимых слоя по шуму Перлина.
+        // 1) кромка гуляет ±3 м; 2) плотность дышит ±18%.
+        float t = Time.time;
+        float liveAmount = FogSettings.LiveOn ? Mathf.Clamp01(FogSettings.LiveAmount) : 0f;
+
+        float breathe = 0f;
+        if (liveAmount > 0f)
+        {
+            float breath = Mathf.PerlinNoise(t * 0.09f, 0.37f) * 2f - 1f;
+            float gust = Mathf.PerlinNoise(t * 0.27f, 3.11f) * 2f - 1f;
+            breathe = (breath * 0.75f + gust * 0.25f) * liveAmount * 8f;
+        }
+
+        float target = FogSettings.DistanceStart + indoorPush * Mathf.Clamp01(shelter) + breathe;
 
         if (smoothStart < 0f || Mathf.Abs(target - smoothStart) > 120f)
         {
@@ -172,9 +189,25 @@ internal static class DistanceFog
             smoothStart = Mathf.Lerp(smoothStart, target, Time.deltaTime * 2.5f);
         }
 
+        // Плотность дышит: ±18% при полной амплитуде. Видно на любой дистанции,
+        // даже когда стена далеко и сдвиг кромки не читается.
+        float densityScale = 1f;
+        if (liveAmount > 0f)
+        {
+            float wave = Mathf.PerlinNoise(t * 0.07f, 7.71f);
+            float puff = Mathf.PerlinNoise(t * 0.25f, 1.93f);
+            float mix = Mathf.Clamp01(wave * 0.7f + puff * 0.3f);
+
+            // Только вниз от текущей силы: иначе на 100% упираемся в потолок
+            // и половина волны «срезается». 0.35 — чтобы было видно глазом.
+            densityScale = 1f - (1f - mix) * liveAmount * 0.35f;
+        }
+
+        LiveFactor = densityScale;
+
         effect.fogStart = smoothStart;
         effect.fogEnd = smoothStart + span;
-        effect.strength = Mathf.Clamp01(strength);
+        effect.strength = Mathf.Clamp01(strength * densityScale);
         effect.color = BiomeFog.Apply(SkyManager.GetFogColor(), localPlayer);
         effect.shelter = Mathf.Clamp01(shelter);
 
