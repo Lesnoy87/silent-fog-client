@@ -187,8 +187,17 @@ internal static class DistanceFog
             ? HordeNight.Amount() * Mathf.Clamp01(FogSettings.HordeFog)
             : 0f;
 
-        float target = FogSettings.DistanceStart + indoorPush * Mathf.Clamp01(shelter) + breathe
-            - horde * 6f;
+        // Кромка: настройка + защита помещения + дыхание.
+        float target = FogSettings.DistanceStart + indoorPush * Mathf.Clamp01(shelter) + breathe;
+
+        // Ночь орды подтягивает туман ближе поверх всего остального. Раньше
+        // −6 м прибавлялось к дистанции до защиты, и под крышей (там начало
+        // уезжает на +N метров) приближение съедалось целиком.
+        if (horde > 0f) target -= 6f * horde;
+
+        // Начало не может уйти за спину игрока: при настройке 5 м и −6 м
+        // получался отрицательный старт, и туман накрывал всё до камеры.
+        target = Mathf.Max(target, 2f);
 
         if (smoothStart < 0f || Mathf.Abs(target - smoothStart) > 120f)
         {

@@ -4,7 +4,7 @@
   <DisplayName value="Silent Fog — Client" />
   <Description value="Клиентский туман: плотный на улице, защита от тумана в домах, сейф-зонах и у торговца. Быстрая синхронизация настроек. Пепельная буря. Ночное ослабление при DifRUST." />
   <Author value="SilentFog" />
-  <Version value="1.13.1" />
+  <Version value="1.13.2" />
   <Website value="" />
   <SkipWithAntiCheat value="true" />
 </xml>
