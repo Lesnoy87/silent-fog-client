@@ -603,11 +603,26 @@ internal static class HordeNight
         float clock = Clock(world);
         if (clock < 0f) return 0f;
 
-        // Красная отметка появляется вечером: плавно с 18:00, полностью к 22:00.
-        float evening = 0f;
-        if (clock >= 18f && clock < 22f) evening = Mathf.InverseLerp(18f, 22f, clock);
-        else if (clock >= 22f || clock < 4f) evening = 1f;
-        else if (clock >= 4f && clock < 6f) evening = 1f - Mathf.InverseLerp(4f, 6f, clock);
+        // Красная отметка появляется вечером, но краснеть начинаем раньше и
+        // заканчиваем до 22:00 — иначе на самой орде получается рывок.
+        float evening;
+        if (clock >= 16f && clock < 21.5f)
+        {
+            float t = Mathf.InverseLerp(16f, 21.5f, clock);
+            evening = t * t * (3f - 2f * t); // smoothstep: мягко в начале и в конце
+        }
+        else if (clock >= 21.5f || clock < 4f)
+        {
+            evening = 1f;
+        }
+        else if (clock >= 4f && clock < 6.5f)
+        {
+            evening = 1f - Mathf.InverseLerp(4f, 6.5f, clock);
+        }
+        else
+        {
+            evening = 0f;
+        }
 
         if (evening <= 0f) return 0f;
 
@@ -1471,10 +1486,17 @@ public class FogMenuBehaviour : MonoBehaviour
         y += 2f;
         GUI.Label(
             new Rect(18f, y, w - 36f, 20f),
-            string.Format("Сейчас: {0} · сила {1}% · укрытие {2}% · дыхание {3}% · орда {4}%",
+            string.Format("Сейчас: {0} · сила {1}% · укрытие {2}%",
                 FogDensityLogic.CurrentMode ?? "—",
                 Mathf.RoundToInt(Mathf.Clamp01(FogDensityLogic.AppliedDensity) * 100f),
-                Mathf.RoundToInt(FogDensityLogic.ShelterPercent),
+                Mathf.RoundToInt(FogDensityLogic.ShelterPercent)),
+            hintStyle
+        );
+        y += 18f;
+
+        GUI.Label(
+            new Rect(18f, y, w - 36f, 20f),
+            string.Format("дыхание {0}% · орда {1}%",
                 Mathf.RoundToInt(Mathf.Clamp01(DistanceFog.LiveFactor) * 100f),
                 Mathf.RoundToInt(Mathf.Clamp01(DistanceFog.HordeAmount) * 100f)),
             hintStyle
