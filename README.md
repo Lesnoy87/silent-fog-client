@@ -79,8 +79,9 @@ Settings are stored in `SilentFog.cfg` next to the game saves.
 - closed vehicle / bike / motorcycle strengths;
 - «Туман по расстоянию (свой шейдер)» — turn the post-effect off to fall back
   to the vanilla exponential fog (handy for troubleshooting);
-- «ЭКСПЕРИМЕНТ · ДЫХАНИЕ ТУМАНА» — toggle plus amplitude: the fog edge drifts
-  up to ±8 m and density dips up to −35%, so the fog seems to breathe;
+- «ДЫХАНИЕ ТУМАНА» — toggle plus amplitude: the fog edge drifts up to ±8 m and
+  density breathes both ways, ±25% of the set strength, so the fog thickens and
+  thins on its own;
 - ash storm toggle and density;
 - night fog softening (only with DifRUST).
 

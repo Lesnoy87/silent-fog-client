@@ -242,7 +242,7 @@ internal static class FogSettings
     // «Живость»: кромка тумана медленно дышит и иногда накатывает порывами.
     // Считается по шуму Перлина в C#, шейдер не меняется вообще.
     public static bool LiveOn = true;
-    public static float LiveAmount = 0.35f;   // 0..1: кромка ±8 м, плотность до −35%
+    public static float LiveAmount = 0.35f;   // 0..1: кромка ±8 м, плотность ±25% (база −15%)
 
     // CVar-имена синхронизации. Вандальные NetPackageModifyCVar, свой пакет
     // регистрировать не нужно — клиенты без мода просто ничего не заметят.
@@ -1307,8 +1307,8 @@ public class FogMenuBehaviour : MonoBehaviour
         y = DrawRangeRow(y, w, "Начало тумана, м", ref FogSettings.DistanceStart, 2f, 60f);
         y = DrawRangeRow(y, w, "Конец тумана, м", ref FogSettings.DistanceEnd, 20f, 200f);
 
-        // Помечено как эксперимент: эффект есть, но вкус у всех разный.
-        GUI.Label(new Rect(18f, y, w - 36f, 18f), "ЭКСПЕРИМЕНТ · ДЫХАНИЕ ТУМАНА", sectionStyle);
+        // Раздел не экспериментальный: эффект доведён и проверен в игре.
+        GUI.Label(new Rect(18f, y, w - 36f, 18f), "ДЫХАНИЕ ТУМАНА", sectionStyle);
         y += 20f;
 
         {
@@ -1324,11 +1324,11 @@ public class FogMenuBehaviour : MonoBehaviour
         {
             bool wasEnabled = GUI.enabled;
             GUI.enabled = host && FogSettings.Enabled && FogSettings.LiveOn;
-            y = DrawRow(y, w, "Амплитуда дыхания (в эксперименте)", ref FogSettings.LiveAmount);
+            y = DrawRow(y, w, "Амплитуда дыхания", ref FogSettings.LiveAmount);
             GUI.enabled = wasEnabled;
 
             GUI.Label(new Rect(18f, y - 6f, w - 36f, 18f),
-                "Плотность гуляет до −35% на 100%. Синхронизируется от хоста.", hintStyle);
+                "Туман то гуще, то реже: на 100% ±25% от силы. Идёт от хоста.", hintStyle);
             y += 16f;
         }
 

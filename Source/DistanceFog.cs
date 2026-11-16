@@ -189,8 +189,8 @@ internal static class DistanceFog
             smoothStart = Mathf.Lerp(smoothStart, target, Time.deltaTime * 2.5f);
         }
 
-        // Плотность дышит: ±18% при полной амплитуде. Видно на любой дистанции,
-        // даже когда стена далеко и сдвиг кромки не читается.
+        // Плотность дышит в обе стороны: и гуще, и реже. Видно на любой
+        // дистанции, даже когда стена далеко и сдвиг кромки не читается.
         float densityScale = 1f;
         if (liveAmount > 0f)
         {
@@ -198,9 +198,15 @@ internal static class DistanceFog
             float puff = Mathf.PerlinNoise(t * 0.25f, 1.93f);
             float mix = Mathf.Clamp01(wave * 0.7f + puff * 0.3f);
 
-            // Только вниз от текущей силы: иначе на 100% упираемся в потолок
-            // и половина волны «срезается». 0.35 — чтобы было видно глазом.
-            densityScale = 1f - (1f - mix) * liveAmount * 0.35f;
+            // Качаем симметрично вокруг заданной силы: и гуще, и реже.
+            // Вверх упираемся в потолок шейдера (1.0), поэтому запас ограничен
+            // фактической силой: при 100% туман может только редеть.
+            // При полной амплитуде: 0.75..1.25 (или до потолка), на 35%: ~0.91..1.09.
+            float swing = (mix - 0.5f) * 2f;
+            densityScale = 1f + swing * liveAmount * 0.25f;
+
+            float headroom = strength > 0.01f ? 1f / strength : 1.35f;
+            densityScale = Mathf.Clamp(densityScale, 0.4f, Mathf.Min(headroom, 1.35f));
         }
 
         LiveFactor = densityScale;
