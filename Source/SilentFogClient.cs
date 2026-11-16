@@ -584,6 +584,13 @@ internal static class HordeNight
 {
     private static int cachedFrame = -1;
     private static float cached;
+    private static float lastActive = -999f;
+
+    // Сколько секунд туман гаснет после последней волны.
+    private const float FadeSeconds = 120f;
+
+    // Насколько сильно краснеет до боя (предчувствие).
+    private const float Premonition = 0.55f;
 
     public static float Amount()
     {
@@ -600,42 +607,91 @@ internal static class HordeNight
         World world = GameManager.Instance != null ? GameManager.Instance.World : null;
         if (world == null) return 0f;
 
-        float clock = Clock(world);
-        if (clock < 0f) return 0f;
+        bool active;
+        bool known = TryBloodMoon(world, out active);
 
-        // Красная отметка появляется вечером, но краснеть начинаем раньше и
-        // заканчиваем до 22:00 — иначе на самой орде получается рывок.
-        float evening;
-        if (clock >= 16f && clock < 21.5f)
+        // 1. Орда идёт — полный красный. Флаг игры честно гаснет после
+        //    последней волны, поэтому не надо ждать рассвета.
+        if (known && active)
         {
-            float t = Mathf.InverseLerp(16f, 21.5f, clock);
-            evening = t * t * (3f - 2f * t); // smoothstep: мягко в начале и в конце
+            lastActive = Time.time;
+            return 1f;
         }
-        else if (clock >= 21.5f || clock < 4f)
+
+        // 2. Только что кончилась — гаснем за две минуты, плавно.
+        if (lastActive > 0f)
         {
-            evening = 1f;
+            float since = Time.time - lastActive;
+            if (since < FadeSeconds)
+                return 1f - Mathf.Clamp01(since / FadeSeconds);
         }
-        else if (clock >= 4f && clock < 6.5f)
+
+        float evening = Evening(world);
+        if (evening <= 0f) return 0f;
+
+        // 3. Предчувствие: вечером того дня, когда будет орда — не полный цвет.
+        //    Если игра умеет сказать «сегодня орда» (BloodMoonWarning) — верим ей,
+        //    иначе считаем по номеру дня (орда каждые 7 дней).
+        bool today;
+        if (known)
         {
-            evening = 1f - Mathf.InverseLerp(4f, 6.5f, clock);
+            if (!TryBoolMember(world, "BloodMoonWarning", out today))
+                today = IsHordeDay(world);
         }
         else
         {
-            evening = 0f;
+            today = IsHordeDay(world);
         }
 
-        if (evening <= 0f) return 0f;
+        return today ? evening * Premonition : 0f;
+    }
 
-        bool bloodMoon;
-        if (TryBloodMoon(world, out bloodMoon))
+    // Часы: 0 — не вечер орды, 1 — глубокая ночь. Краснеем с 16:00,
+    // полностью к 21:30, утром гаснем 04:00 → 06:30.
+    private static float Evening(World world)
+    {
+        float clock = Clock(world);
+        if (clock < 0f) return 0f;
+
+        if (clock >= 16f && clock < 21.5f)
         {
-            // Игра знает точно: если орда не сегодня — туман не краснеет.
-            return bloodMoon ? evening : 0f;
+            float t = Mathf.InverseLerp(16f, 21.5f, clock);
+            return t * t * (3f - 2f * t); // smoothstep
         }
 
+        if (clock >= 21.5f || clock < 4f) return 1f;
+        if (clock >= 4f && clock < 6.5f) return 1f - Mathf.InverseLerp(4f, 6.5f, clock);
+        return 0f;
+    }
+
+    private static bool IsHordeDay(World world)
+    {
         int days = GameUtils.WorldTimeToDays(world.GetWorldTime());
-        bool hordeDay = days > 0 && (days % 7) == 0;
-        return hordeDay ? evening : 0f;
+        return days > 0 && (days % 7) == 0;
+    }
+
+    private static bool TryBoolMember(World world, string name, out bool value)
+    {
+        value = false;
+        try
+        {
+            object ai = Member(world, "aiDirector");
+            if (ai == null) return false;
+
+            object bm = Member(ai, "BloodMoonComponent");
+            if (bm == null) return false;
+
+            object flag = Member(bm, name);
+            if (flag is bool)
+            {
+                value = (bool)flag;
+                return true;
+            }
+        }
+        catch
+        {
+        }
+        return false;
     }
 
     private static bool TryBloodMoon(World world, out bool active)
