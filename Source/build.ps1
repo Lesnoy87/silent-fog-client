@@ -5,6 +5,6 @@ param(
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-dotnet build (Join-Path $here "RustNightClient.csproj") -c Release -p:GameDir="$GameDir"
-Copy-Item (Join-Path $here "bin\Release\netstandard2.1\RustNightClient.dll") (Join-Path $here "..\RustNightClient.dll") -Force
-Write-Host "RustNightClient.dll обновлён." -ForegroundColor Green
+dotnet build (Join-Path $here "SilentFogClient.csproj") -c Release -p:GameDir="$GameDir"
+Copy-Item (Join-Path $here "bin\Release\netstandard2.1\SilentFogClient.dll") (Join-Path $here "..\SilentFogClient.dll") -Force
+Write-Host "SilentFogClient.dll обновлён." -ForegroundColor Green
