@@ -103,6 +103,9 @@ internal static class DistanceFog
     // Текущий коэффициент «дыхания» (1.0 — без изменений). Для меню.
     public static float LiveFactor { get; private set; } = 1f;
 
+    // Насколько сейчас «включена» ночь орды (0..1) — для меню.
+    public static float HordeAmount { get; private set; }
+
     public static void Tick(EntityPlayerLocal player)
     {
         if (!loadTried) TryLoad();
@@ -178,7 +181,14 @@ internal static class DistanceFog
             breathe = (breath * 0.75f + gust * 0.25f) * liveAmount * 8f;
         }
 
-        float target = FogSettings.DistanceStart + indoorPush * Mathf.Clamp01(shelter) + breathe;
+        // Ночь орды: туман краснеет, подходит ближе и густеет.
+        // Считается один раз в кадр в HordeNight, здесь только применяем.
+        float horde = FogSettings.HordeFogOn
+            ? HordeNight.Amount() * Mathf.Clamp01(FogSettings.HordeFog)
+            : 0f;
+
+        float target = FogSettings.DistanceStart + indoorPush * Mathf.Clamp01(shelter) + breathe
+            - horde * 6f;
 
         if (smoothStart < 0f || Mathf.Abs(target - smoothStart) > 120f)
         {
@@ -210,11 +220,18 @@ internal static class DistanceFog
         }
 
         LiveFactor = densityScale;
+        HordeAmount = horde;
 
         effect.fogStart = smoothStart;
         effect.fogEnd = smoothStart + span;
-        effect.strength = Mathf.Clamp01(strength * densityScale);
-        effect.color = BiomeFog.Apply(SkyManager.GetFogColor(), localPlayer);
+        effect.strength = Mathf.Clamp01(strength * densityScale * (1f + horde * 0.35f));
+        Color fogColor = BiomeFog.Apply(SkyManager.GetFogColor(), localPlayer);
+        if (horde > 0.001f)
+        {
+            // Бордовый, а не алый: алый в 7DTD уже занят вспышками взрывов.
+            fogColor = Color.Lerp(fogColor, new Color(0.52f, 0.06f, 0.08f), horde * 0.8f);
+        }
+        effect.color = fogColor;
         effect.shelter = Mathf.Clamp01(shelter);
 
         if (ParticlesEnabled)

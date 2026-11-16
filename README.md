@@ -58,6 +58,8 @@ and the distance-fog toggle:
 | `sf_biome_tint` | biome colour strength |
 | `sf_live_on` | fog breathing (experimental) |
 | `sf_live_amount` | breathing amplitude, 0–1 |
+| `sf_horde_on` | horde night fog (red, denser) |
+| `sf_horde_fog` | horde fog strength, 0–1 |
 
 The client menu is **read-only**: every slider is greyed out, values arrive from
 the host and the panel says «Настройки задаёт хост». Only the host can change
@@ -75,6 +77,8 @@ Settings are stored in `SilentFog.cfg` next to the game saves.
 - «Начало тумана, м» — where the fog starts (default 12 m);
 - «Конец тумана, м» — where it becomes solid (default 80 m);
 - «Оттенок биома» — how strongly the biome palette is applied (0–100%);
+- «Туман в ночь орды» — from 18:00 on blood moon the fog reddens (burgundy by
+  22:00), comes 6 m closer and thickens up to +35%; strength slider below;
 - «Защита помещения / сейф-зоны» — how far the start moves under a roof;
 - closed vehicle / bike / motorcycle strengths;
 - «Туман по расстоянию (свой шейдер)» — turn the post-effect off to fall back

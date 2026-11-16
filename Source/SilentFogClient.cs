@@ -244,6 +244,10 @@ internal static class FogSettings
     public static bool LiveOn = true;
     public static float LiveAmount = 0.35f;   // 0..1: кромка ±8 м, плотность ±25% (база −15%)
 
+    // Ночь орды: туман краснеет и плотнеет. HordeFog — сила эффекта 0..1.
+    public static bool HordeFogOn = true;
+    public static float HordeFog = 0.7f;
+
     // CVar-имена синхронизации. Вандальные NetPackageModifyCVar, свой пакет
     // регистрировать не нужно — клиенты без мода просто ничего не заметят.
     public const string CvarEnabled = "sf_fog_on";
@@ -263,6 +267,8 @@ internal static class FogSettings
     public const string CvarBiomeTint = "sf_biome_tint";
     public const string CvarLiveOn = "sf_live_on";
     public const string CvarLiveAmount = "sf_live_amount";
+    public const string CvarHordeOn = "sf_horde_on";
+    public const string CvarHordeFog = "sf_horde_fog";
 
     private static bool dirty;
     private static float nextSend;
@@ -335,6 +341,10 @@ internal static class FogSettings
             LiveOn = buffs.GetCustomVar(CvarLiveOn) >= 0.5f;
         if (buffs.HasCustomVar(CvarLiveAmount))
             LiveAmount = Clamp01(buffs.GetCustomVar(CvarLiveAmount));
+        if (buffs.HasCustomVar(CvarHordeOn))
+            HordeFogOn = buffs.GetCustomVar(CvarHordeOn) >= 0.5f;
+        if (buffs.HasCustomVar(CvarHordeFog))
+            HordeFog = Clamp01(buffs.GetCustomVar(CvarHordeFog));
 
         // Внутри не должно быть плотнее, чем на улице.
         if (Indoor > Outdoor) Indoor = Outdoor;
@@ -394,6 +404,8 @@ internal static class FogSettings
             Send(player, CvarBiomeTint, BiomeTint);
             Send(player, CvarLiveOn, LiveOn ? 1f : 0f);
             Send(player, CvarLiveAmount, LiveAmount);
+            Send(player, CvarHordeOn, HordeFogOn ? 1f : 0f);
+            Send(player, CvarHordeFog, HordeFog);
         }
     }
 
@@ -421,6 +433,8 @@ internal static class FogSettings
         BiomeTint = 0.55f;
         LiveOn = true;
         LiveAmount = 0.35f;
+        HordeFogOn = true;
+        HordeFog = 0.7f;
         MarkDirty();
     }
 
@@ -531,6 +545,8 @@ internal static class FogSettings
                     case "biome_tint": BiomeTint = Mathf.Clamp01(num); break;
                     case "live": LiveOn = num >= 0.5f; break;
                     case "live_amount": LiveAmount = Clamp01(num); break;
+                    case "horde_on": HordeFogOn = num >= 0.5f; break;
+                    case "horde_fog": HordeFog = Clamp01(num); break;
                 }
             }
         }
@@ -546,17 +562,113 @@ internal static class FogSettings
         {
             string text = string.Format(
                 System.Globalization.CultureInfo.InvariantCulture,
-                "enabled={0}\noutdoor={1}\nindoor={2}\nclosed={3}\nopen={4}\nstorm={5}\nstorm_density={6}\nnight_fog={7}\nshelter={8}\ndistance={9}\ndistance_start={10}\ndistance_end={11}\nbiome_tint={12}\nlive={13}\nlive_amount={14}\n",
+                "enabled={0}\noutdoor={1}\nindoor={2}\nclosed={3}\nopen={4}\nstorm={5}\nstorm_density={6}\nnight_fog={7}\nshelter={8}\ndistance={9}\ndistance_start={10}\ndistance_end={11}\nbiome_tint={12}\nlive={13}\nlive_amount={14}\nhorde_on={15}\nhorde_fog={16}\n",
                 Enabled ? "1" : "0", Outdoor, Indoor, ClosedVehicle, OpenVehicle,
                 StormEnabled ? "1" : "0", StormDensity, NightSoftening,
                 UseShelter ? "1" : "0",
                 DistanceOn ? "1" : "0", DistanceStart, DistanceEnd, BiomeTint,
-                LiveOn ? "1" : "0", LiveAmount);
+                LiveOn ? "1" : "0", LiveAmount,
+                HordeFogOn ? "1" : "0", HordeFog);
             File.WriteAllText(SettingsPath, text);
         }
         catch
         {
         }
+    }
+}
+
+// Ночь орды. Сначала пробуем спросить саму игру (BloodMoonComponent — активна ли
+// орда), а если поле не нашлось — считаем по номеру дня: по умолчанию орда
+// каждые 7 дней. Так мод не падает на другой версии игры и не тянет лишних ссылок.
+internal static class HordeNight
+{
+    private static int cachedFrame = -1;
+    private static float cached;
+
+    public static float Amount()
+    {
+        if (Time.frameCount != cachedFrame)
+        {
+            cachedFrame = Time.frameCount;
+            cached = Compute();
+        }
+        return cached;
+    }
+
+    private static float Compute()
+    {
+        World world = GameManager.Instance != null ? GameManager.Instance.World : null;
+        if (world == null) return 0f;
+
+        float clock = Clock(world);
+        if (clock < 0f) return 0f;
+
+        // Красная отметка появляется вечером: плавно с 18:00, полностью к 22:00.
+        float evening = 0f;
+        if (clock >= 18f && clock < 22f) evening = Mathf.InverseLerp(18f, 22f, clock);
+        else if (clock >= 22f || clock < 4f) evening = 1f;
+        else if (clock >= 4f && clock < 6f) evening = 1f - Mathf.InverseLerp(4f, 6f, clock);
+
+        if (evening <= 0f) return 0f;
+
+        bool bloodMoon;
+        if (TryBloodMoon(world, out bloodMoon))
+        {
+            // Игра знает точно: если орда не сегодня — туман не краснеет.
+            return bloodMoon ? evening : 0f;
+        }
+
+        int days = GameUtils.WorldTimeToDays(world.GetWorldTime());
+        bool hordeDay = days > 0 && (days % 7) == 0;
+        return hordeDay ? evening : 0f;
+    }
+
+    private static bool TryBloodMoon(World world, out bool active)
+    {
+        active = false;
+        try
+        {
+            object ai = Member(world, "aiDirector");
+            if (ai == null) return false;
+
+            object bm = Member(ai, "BloodMoonComponent");
+            if (bm == null) return false;
+
+            object flag = Member(bm, "BloodMoonActive");
+            if (flag is bool)
+            {
+                active = (bool)flag;
+                return true;
+            }
+        }
+        catch
+        {
+        }
+        return false;
+    }
+
+    private static object Member(object target, string name)
+    {
+        if (target == null) return null;
+        Type t = target.GetType();
+
+        System.Reflection.PropertyInfo p = t.GetProperty(name,
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+            | System.Reflection.BindingFlags.Instance);
+        if (p != null) return p.GetValue(target, null);
+
+        System.Reflection.FieldInfo f = t.GetField(name,
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+            | System.Reflection.BindingFlags.Instance);
+        return f != null ? f.GetValue(target) : null;
+    }
+
+    private static float Clock(World world)
+    {
+        ulong time = world.GetWorldTime();
+        int hours = GameUtils.WorldTimeToHours(time);
+        int minutes = GameUtils.WorldTimeToMinutes(time);
+        return hours + minutes / 60f;
     }
 }
 
@@ -1333,6 +1445,24 @@ public class FogMenuBehaviour : MonoBehaviour
         }
 
         y = DrawRow(y, w, "Оттенок биома", ref FogSettings.BiomeTint);
+
+        // Ночь орды: туман краснеет и наезжает заранее, ещё до 22:00.
+        {
+            bool was = FogSettings.HordeFogOn;
+            FogSettings.HordeFogOn = DrawToggle(
+                new Rect(18f, y, w - 36f, 22f),
+                FogSettings.HordeFogOn,
+                "Туман в ночь орды (красный, плотнее)");
+            if (was != FogSettings.HordeFogOn) FogSettings.MarkDirty();
+        }
+        y += 28f;
+
+        {
+            bool wasEnabled = GUI.enabled;
+            GUI.enabled = host && FogSettings.Enabled && FogSettings.HordeFogOn;
+            y = DrawRow(y, w, "Сила тумана орды", ref FogSettings.HordeFog);
+            GUI.enabled = wasEnabled;
+        }
         y = DrawProtectionRow(y, w);
 
         y = DrawRow(y, w, "Закрытый транспорт / Ark", ref FogSettings.ClosedVehicle);
@@ -1341,11 +1471,12 @@ public class FogMenuBehaviour : MonoBehaviour
         y += 2f;
         GUI.Label(
             new Rect(18f, y, w - 36f, 20f),
-            string.Format("Сейчас: {0} · сила {1}% · укрытие {2}% · дыхание {3}%",
+            string.Format("Сейчас: {0} · сила {1}% · укрытие {2}% · дыхание {3}% · орда {4}%",
                 FogDensityLogic.CurrentMode ?? "—",
                 Mathf.RoundToInt(Mathf.Clamp01(FogDensityLogic.AppliedDensity) * 100f),
                 Mathf.RoundToInt(FogDensityLogic.ShelterPercent),
-                Mathf.RoundToInt(Mathf.Clamp01(DistanceFog.LiveFactor) * 100f)),
+                Mathf.RoundToInt(Mathf.Clamp01(DistanceFog.LiveFactor) * 100f),
+                Mathf.RoundToInt(Mathf.Clamp01(DistanceFog.HordeAmount) * 100f)),
             hintStyle
         );
         y += 20f;
