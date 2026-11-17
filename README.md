@@ -1,6 +1,6 @@
 # Silent Fog — Client (source)
 
-Client-side Harmony mod for 7 Days to Die 3.4.x. Version **1.11.0**.
+Client-side Harmony mod for 7 Days to Die 3.4.x. Version **1.13.3**.
 
 ## What it does
 
@@ -159,4 +159,4 @@ Launch the game without EAC (DLL/Harmony mod).
 
 ## Version
 
-`1.11.0` — see `CHANGELOG.md` for the full history.
+`1.13.3` — see `CHANGELOG.md` for the full history.
