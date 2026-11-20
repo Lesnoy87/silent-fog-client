@@ -160,3 +160,21 @@ Launch the game without EAC (DLL/Harmony mod).
 ## Version
 
 `1.13.3` — see `CHANGELOG.md` for the full history.
+
+## License
+
+Starting with **1.15.0**, Silent Fog is **All Rights Reserved /
+source-available**, not MIT.
+
+- Free to download, install, play, and use on free-to-join servers.
+- Free to include the **unmodified** mod in free non-commercial modpacks,
+  server packs and Nexus collections with credit to **Lesnoy87 / Silent Fog**
+  and a link to the original project.
+- No selling, paywalls, ad-gating, reuploads as your own work, modified
+  redistribution, or integration into other mods/products without written
+  permission.
+
+The authoritative text is `LICENSE` (English). A Russian summary is in
+`LICENSE-RU.md`. Versions **1.13.3 and earlier** remain under MIT; those
+rights cannot be revoked.
+

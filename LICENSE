@@ -1,21 +1,93 @@
-MIT License
+SILENT FOG
+Copyright (c) 2026 Lesnoy87. All rights reserved.
 
-Copyright (c) 2026 Lesnoy87
+This license governs the use of the Silent Fog project, including its
+source code, shaders, compiled binaries, AssetBundles, server files,
+documentation, configuration files and any accompanying materials
+(the "Software").
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+By downloading, installing, copying or using the Software, you agree to
+this license. If you do not agree, do not use the Software.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. LIMITED PERMISSION
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+   Subject to this license, you may:
+
+   (a) download and install the Software for personal, non-commercial
+       entertainment;
+
+   (b) use the Software on private or public game servers that are free
+       to join;
+
+   (c) include the unmodified Software in a free, non-commercial modpack,
+       server pack or Nexus collection, provided that you:
+       - give clear credit to "Lesnoy87 / Silent Fog";
+       - include a link to the original project page;
+       - keep this license and all copyright notices intact;
+       - do not sell, paywall, ad-gate or otherwise monetize the pack;
+
+   (d) stream or record gameplay that uses the Software, provided you do
+       not redistribute the Software itself as a separate product.
+
+2. RESTRICTIONS
+
+   Without the prior written permission of the copyright holder, you may
+   not:
+
+   (a) copy, modify, adapt, translate, reverse engineer, decompile or
+       disassemble the Software, or create derivative works based on it;
+
+   (b) redistribute the Software or any modified version, except as
+       expressly permitted in section 1(c);
+
+   (c) sell, rent, lease, sublicense or otherwise commercialize the
+       Software, or include it in a paid product or paid service;
+
+   (d) incorporate the Software or its source code into another mod,
+       game, product or commercial project;
+
+   (e) remove, obscure or alter any copyright, license or attribution
+       notice;
+
+   (f) claim authorship of the Software or its original ideas and
+       implementation.
+
+3. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+   IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+   ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+   OTHER DEALINGS IN THE SOFTWARE.
+
+4. TERMINATION
+
+   Any violation of this license terminates your permission to use the
+   Software. On termination you must stop using it and delete all copies
+   in your possession or control.
+
+5. THIRD-PARTY RIGHTS
+
+   This license covers only original material created by the copyright
+   holder. 7 Days to Die and its assets are the property of The Fun Pimps.
+   Third-party libraries, tools and assets remain under their respective
+   licenses. Nothing in this license grants rights to third-party
+   material.
+
+6. VERSION AND SCOPE
+
+   This license applies to all versions and commits of the Software made
+   available after this license was added to the repository. Versions
+   released earlier (including v1.13.3 and earlier) remain under the
+   license under which they were published; rights already granted for
+   those versions cannot be revoked.
+
+7. CONTACT
+
+   For permissions, commercial licensing or other questions:
+   https://github.com/Lesnoy87/silent-fog-client
+   or the Nexus Mods page for Silent Fog.
+
+All rights not expressly granted are reserved.
