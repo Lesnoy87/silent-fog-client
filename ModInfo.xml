@@ -2,9 +2,9 @@
 <xml>
   <Name value="SilentFogClient" />
   <DisplayName value="Silent Fog — Client" />
-  <Description value="Клиентский туман: плотный на улице, защита от тумана в домах, сейф-зонах и у торговца. Быстрая синхронизация настроек. Пепельная буря. Ночное ослабление при DifRUST." />
+  <Description value="Клиентский туман: единое поле, защита домов/POI/торговца и баз по claim'ам всех игроков. Хост-замок, быстрая синхронизация настроек, динамические клочья по ветру, пепельная буря, ночное ослабление при DifRUST." />
   <Author value="SilentFog" />
-  <Version value="1.13.3" />
-  <Website value="" />
+  <Version value="1.15.0" />
+  <Website value="https://github.com/Lesnoy87/silent-fog-client" />
   <SkipWithAntiCheat value="true" />
 </xml>

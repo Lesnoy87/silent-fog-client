@@ -16,6 +16,28 @@ public class SilentFogImageEffect : MonoBehaviour
     public Color color = Color.white;
     public float shelter = 0f;
 
+    // Динамика: амплитуда уже в долях плотности (0..0.30, с мягкими краями ~±22%)
+    // и мировой сдвиг ветра.
+    public float dynamicAmount = 0f;
+    public Vector2 wind;
+
+    // Мировой центр тумана (XZ), высота земли и вертикальное «стекание» шума.
+    public Vector2 center;
+    public float baseY;
+    public float noiseSink;
+
+    // До 6 боксов-препятствий (торговец, дом/POI, база).
+    public Vector4[] boxMin = new Vector4[6];
+    public Vector4[] boxMax = new Vector4[6];
+    public int boxCount;
+    public Vector4 edgeParams = new Vector4(1.5f, 0.5f, 0.27f, 0.12f);
+    public bool debug;
+    public int debugMode;
+
+    // Смещение render-space -> game-space для камеры (floating origin).
+    // Считается как player.position - player.transform.position.
+    public Vector3 worldOffset;
+
     private void OnRenderImage(RenderTexture source, RenderTexture destination)
     {
         if (material == null)
@@ -29,6 +51,41 @@ public class SilentFogImageEffect : MonoBehaviour
         material.SetFloat("_FogStrength", Mathf.Clamp01(strength));
         material.SetFloat("_SkyExclude", 1f);
         material.SetColor("_FogColor", color);
+
+        Camera cam = GetComponent<Camera>();
+        if (cam != null)
+        {
+            Transform t = cam.transform;
+            Vector3 pos = t.position + worldOffset;
+            Vector3 right = t.right;
+            Vector3 up = t.up;
+            Vector3 forward = t.forward;
+
+            material.SetVector("_CamPos", new Vector4(pos.x, pos.y, pos.z, 0f));
+            material.SetVector("_CamRight", new Vector4(right.x, right.y, right.z, 0f));
+            material.SetVector("_CamUp", new Vector4(up.x, up.y, up.z, 0f));
+            material.SetVector("_CamForward", new Vector4(forward.x, forward.y, forward.z, 0f));
+
+            // Тангенсы берём из матрицы проекции: так учитывается реальный
+            // FOV и aspect, даже если игра их меняет (прицел, оптика).
+            Matrix4x4 p = cam.projectionMatrix;
+            float tanY = p.m11 > 0.0001f ? 1f / p.m11 : 0.5f;
+            float tanX = p.m00 > 0.0001f ? 1f / p.m00 : 0.5f;
+            material.SetFloat("_TanHalfFovY", tanY);
+            material.SetFloat("_TanHalfFovX", tanX);
+        }
+
+        material.SetFloat("_DynamicAmount", Mathf.Clamp01(dynamicAmount));
+        material.SetVector("_Wind", new Vector4(wind.x, wind.y, 0f, 0f));
+
+        material.SetVector("_FogCenter", new Vector4(center.x, center.y, 0f, 0f));
+        material.SetFloat("_BaseY", baseY);
+        material.SetFloat("_NoiseSink", noiseSink);
+        material.SetVectorArray("_FogBoxMin", boxMin);
+        material.SetVectorArray("_FogBoxMax", boxMax);
+        material.SetFloat("_FogBoxCount", boxCount);
+        material.SetVector("_FogEdge", edgeParams);
+        material.SetFloat("_FogDebug", debugMode);
 
         Graphics.Blit(source, destination, material);
 
@@ -63,11 +120,32 @@ internal static class DistanceFog
     private static Material material;
     private static Shader particleShader;
     private static Material particleMaterial;
+    private static Texture3D noiseTexture;
+    private static Vector2 wind;
     private static bool loadTried;
     private static string status = "не загружен";
     private static Camera hooked;
     private static SilentFogImageEffect effect;
+
+    // Мировое слежение: центр отстаёт от игрока на триггер.
+    public static bool FollowLag = true;
+    // Камера в game-space (render + floating origin) — для боксов и пузыря.
+    public static Vector3 CamGame;
+    private static World lastWorld;
+
+    private static Vector2 center;
+    private static bool centerInit;
+    private static Vector2 lastPlayerPos;
+    private static bool playerPosInit;
+    private static float playerSpeed;
+    private static float noiseSink;
+    private static float baseY;
+    private static bool baseInit;
+    private static int tickFrame = -1;
+    private static int applyFrame = -1;
     private static float smoothStart = -1f;
+    private static float smoothSpan = -1f;
+    private static float smoothStrength = -1f;
     private static EntityPlayerLocal localPlayer;
 
     // --- Частицы ---
@@ -106,6 +184,16 @@ internal static class DistanceFog
     // Насколько сейчас «включена» ночь орды (0..1) — для меню.
     public static float HordeAmount { get; private set; }
 
+    // Текущая амплитуда клочьев (0..1, как в меню) и скорость ветра — для меню.
+    public static float DynamicLive { get; private set; }
+    public static float WindSpeed { get; private set; }
+
+    // Диагностика для меню: фактическое начало/конец и отставание центра.
+    public static float ActiveStart { get; private set; }
+    public static float ActiveEnd { get; private set; }
+    public static float CenterOffset { get; private set; }
+    public static float ActiveStrength { get; private set; }
+
     public static void Tick(EntityPlayerLocal player)
     {
         if (!loadTried) TryLoad();
@@ -116,8 +204,52 @@ internal static class DistanceFog
 
         localPlayer = player;
 
+        // Новый мир — сбрасываем боксы и пересобираем статику.
+        if (lastWorld != player.world)
+        {
+            lastWorld = player.world;
+            FogObstacles.Reset();
+        }
+
+        // GetDesiredDensity вызывается несколько раз за кадр (несколько
+        // Harmony-патчей). Ветер/центр/«стекание» должны шагать один раз.
+        if (Time.frameCount == tickFrame) return;
+        tickFrame = Time.frameCount;
+
+        // «Стекание»: шум медленно уезжает вниз, как будто туман оседает.
+        // Высота тумана — от рельефа, а не от ног игрока: иначе на вышке
+        // вертикальный градиент едет за камерой.
+        float groundY = player.position.y;
+        World world = player.world;
+        if (world != null)
+        {
+            float terrain = world.GetHeightAt(player.position.x, player.position.z);
+            if (terrain > 0.5f && terrain <= player.position.y + 2f)
+                groundY = terrain;
+        }
+
+        if (!baseInit || Mathf.Abs(groundY - baseY) > 40f)
+        {
+            baseY = groundY;
+            baseInit = true;
+        }
+        else
+        {
+            baseY = Mathf.Lerp(baseY, groundY, Time.deltaTime * 2f);
+        }
+
+        noiseSink += 0.35f * Time.deltaTime;
+        if (noiseSink > 2000f) noiseSink -= 2000f;
+
         if (hooked != cam || effect == null)
         {
+            centerInit = false;
+            playerPosInit = false;
+            playerSpeed = 0f;
+            smoothStart = -1f;
+            smoothSpan = -1f;
+            smoothStrength = -1f;
+
             hooked = cam;
             cam.depthTextureMode |= DepthTextureMode.Depth;
 
@@ -128,6 +260,11 @@ internal static class DistanceFog
             }
             effect.material = material;
         }
+
+        // Render-space -> game-space: камера в 7DTD может быть смещена
+        // floating origin, а блоки/центр/бокс — в мировых координатах.
+        effect.worldOffset = player.position - player.transform.position;
+        CamGame = cam.transform.position + effect.worldOffset;
 
         if (ParticlesEnabled) EnsureBuffer(cam);
     }
@@ -166,7 +303,93 @@ internal static class DistanceFog
     {
         if (effect == null) return;
 
-        float span = Mathf.Max(FogSettings.DistanceEnd - FogSettings.DistanceStart, 10f);
+        // Несколько Harmony-патчей зовут GetDesiredDensity за кадр.
+        // Apply должен обновлять мир/ветер/центр ровно один раз.
+        if (Time.frameCount == applyFrame) return;
+        applyFrame = Time.frameCount;
+
+        // --- мировой центр: отстаёт от игрока, пока тот не выйдет из триггера ---
+        if (localPlayer != null)
+        {
+            Vector2 p = new Vector2(localPlayer.position.x, localPlayer.position.z);
+            float dt = Mathf.Max(Time.deltaTime, 0.0001f);
+
+            // Скорость игрока: на мотоцикле центр должен догонять быстрее,
+            // иначе цилиндр отстаёт и «не поспевает».
+            if (playerPosInit)
+            {
+                float inst = Vector2.Distance(p, lastPlayerPos) / dt;
+                if (inst < 80f)
+                {
+                    playerSpeed = Mathf.Lerp(playerSpeed, inst,
+                        Mathf.Clamp01(dt * 6f));
+                }
+            }
+            else
+            {
+                playerSpeed = 0f;
+                playerPosInit = true;
+            }
+            lastPlayerPos = p;
+
+            if (!centerInit || (p - center).sqrMagnitude > 80f * 80f)
+            {
+                center = p;
+                centerInit = true;
+                playerSpeed = 0f;
+            }
+
+            if (FollowLag)
+            {
+                float trigger = 4f;
+                float dist = Vector2.Distance(p, center);
+                if (dist > trigger)
+                {
+                    Vector2 targetCenter = p + (center - p) / dist * trigger;
+                    float followSpeed = Mathf.Max(24f, playerSpeed * 1.25f + 4f);
+                    center = Vector2.MoveTowards(center, targetCenter,
+                        followSpeed * dt);
+                }
+            }
+            else
+            {
+                // В доме/у торговца центр не отстаёт — иначе туман окажется
+                // внутри игрока при коротком радиусе.
+                center = p;
+            }
+        }
+
+        // Насколько камера внутри чистого объёма: 0 — улица, 1 — дом/торговец.
+        // Тот же вес сжимает пузырь игрока: внутри R=0, снаружи R=start.
+        float wIn = Mathf.Clamp01(FogObstacles.InsideWeight);
+
+        // Внутри здания сила тумана снаружи должна быть уличной, а не
+        // «домашней»: иначе окно почти чистое.
+        float baseStrength = Mathf.Lerp(strength,
+            FogDensityLogic.OutdoorDensity, wIn);
+
+        float span = Mathf.Max(
+            FogSettings.DistanceEnd - FogSettings.DistanceStart, 10f);
+
+        // Внутри здания центр сводим к камере: тогда worldDist == Dh и
+        // остатка лага внутри дома нет. На улице остаётся обычный FollowLag.
+        Vector2 centerEff = center;
+        if (localPlayer != null)
+        {
+            Vector2 camXZ = new Vector2(CamGame.x, CamGame.z);
+            centerEff = Vector2.Lerp(center, camXZ, wIn);
+        }
+
+        // Сглаживаем span при смене режима (улица 33 м -> дом 2.5 м),
+        // иначе fogEnd прыгает и на секунду появляется плотная оболочка.
+        if (smoothSpan < 0f || Mathf.Abs(span - smoothSpan) > 120f)
+        {
+            smoothSpan = span;
+        }
+        else
+        {
+            smoothSpan = Mathf.Lerp(smoothSpan, span, Time.deltaTime * 2.5f);
+        }
 
         // «Живость»: два независимых слоя по шуму Перлина.
         // 1) кромка гуляет ±3 м; 2) плотность дышит ±18%.
@@ -187,11 +410,15 @@ internal static class DistanceFog
             ? HordeNight.Amount() * Mathf.Clamp01(FogSettings.HordeFog)
             : 0f;
 
-        // Кромка: настройка + защита помещения + дыхание.
-        float target = FogSettings.DistanceStart + indoorPush * Mathf.Clamp01(shelter) + breathe;
+        // Кромка: настройка + защита помещения + дыхание. Внутри здания
+        // indoorPush гаснет, потому что пузырь всё равно сжат до 0.
+        float target = FogSettings.DistanceStart
+            + indoorPush * Mathf.Clamp01(shelter) * (1f - wIn)
+            + breathe;
 
         // Начало не уходит за спину игрока при любой настройке.
-        target = Mathf.Max(target, 2f);
+        // 4 м — триггер follow-центра; 6 м гарантируют, что туман впереди.
+        target = Mathf.Max(target, 6f);
 
         if (smoothStart < 0f || Mathf.Abs(target - smoothStart) > 120f)
         {
@@ -218,17 +445,65 @@ internal static class DistanceFog
             float swing = (mix - 0.5f) * 2f;
             densityScale = 1f + swing * liveAmount * 0.25f;
 
-            float headroom = strength > 0.01f ? 1f / strength : 1.35f;
+            float headroom = baseStrength > 0.01f ? 1f / baseStrength : 1.35f;
             densityScale = Mathf.Clamp(densityScale, 0.4f, Mathf.Min(headroom, 1.35f));
         }
 
         LiveFactor = densityScale;
         HordeAmount = horde;
 
-        effect.fogStart = smoothStart;
-        effect.fogEnd = smoothStart + span;
-        effect.strength = Mathf.Clamp01(strength * densityScale * (1f + horde * 0.35f));
-        Color fogColor = BiomeFog.Apply(SkyManager.GetFogColor(), localPlayer);
+        // Динамика: клочья живут в мире и плывут по ветру. Ветер копим в
+        // мировых координатах и не даём числу расти бесконечно.
+        float dynamicOn = FogSettings.DynamicOn
+            ? Mathf.Clamp01(FogSettings.DynamicAmount)
+            : 0f;
+        float windSpeed = Mathf.Lerp(0f, 4.5f, Mathf.Clamp01(FogSettings.DynamicSpeed));
+
+        if (dynamicOn > 0.0001f)
+        {
+            wind.x += 0.82f * windSpeed * Time.deltaTime;
+            wind.y += 0.57f * windSpeed * Time.deltaTime;
+        }
+
+        DynamicLive = dynamicOn;
+        WindSpeed = windSpeed;
+
+        effect.fogStart = smoothStart * (1f - wIn);
+        effect.fogEnd = effect.fogStart + smoothSpan;
+
+        ActiveStart = effect.fogStart;
+        ActiveEnd = effect.fogEnd;
+        CenterOffset = localPlayer != null
+            ? Vector2.Distance(centerEff,
+                new Vector2(localPlayer.position.x, localPlayer.position.z))
+            : 0f;
+
+        float targetStrength = Mathf.Clamp01(baseStrength * densityScale * (1f + horde * 0.35f));
+        if (smoothStrength < 0f || targetStrength <= 0.001f)
+        {
+            smoothStrength = targetStrength;
+        }
+        else
+        {
+            smoothStrength = Mathf.Lerp(smoothStrength, targetStrength, Time.deltaTime * 4f);
+        }
+
+        effect.strength = smoothStrength;
+        ActiveStrength = smoothStrength;
+        effect.dynamicAmount = dynamicOn * 0.30f;
+        effect.wind = wind;
+        effect.center = centerEff;
+        effect.worldOffset = localPlayer != null
+            ? localPlayer.position - localPlayer.transform.position
+            : Vector3.zero;
+        effect.baseY = baseY;
+        effect.noiseSink = noiseSink;
+        effect.boxMin = FogObstacles.BoxMin;
+        effect.boxMax = FogObstacles.BoxMax;
+        effect.boxCount = FogObstacles.Count;
+        effect.debugMode = FogSettings.DebugMode;
+        Color fogColor = BiomeFog.Milkify(
+            BiomeFog.Apply(SkyManager.GetFogColor(), localPlayer));
         if (horde > 0.001f)
         {
             // Бордовый, а не алый: алый в 7DTD уже занят вспышками взрывов.
@@ -495,17 +770,140 @@ internal static class DistanceFog
             material = new Material(shader);
             material.hideFlags = HideFlags.DontSave;
 
+            // Текстуру шума делаем сами при старте: 64x64x64, бесшовная,
+            // с мипами — на дальних дистанциях она сама размывается и не мерцает.
+            try
+            {
+                noiseTexture = CreateNoiseTexture3D(64);
+                material.SetTexture("_NoiseTex", noiseTexture);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[SilentFog] noise texture failed: " + e.Message);
+            }
+
             if (particleShader != null && particleShader.isSupported)
             {
                 particleMaterial = new Material(particleShader);
                 particleMaterial.hideFlags = HideFlags.DontSave;
             }
 
-            status = "готов";
+            status = noiseTexture != null ? "готов" : "готов (без шума)";
         }
         catch (Exception e)
         {
             status = "ошибка: " + e.Message;
+        }
+    }
+
+    // --- бесшовная 3D-текстура шума ---
+
+    private static Texture3D CreateNoiseTexture3D(int size)
+    {
+        Texture3D tex = new Texture3D(size, size, size, TextureFormat.RGBA32, true);
+        tex.name = "SilentFogNoise3D";
+        tex.wrapMode = TextureWrapMode.Repeat;
+        tex.filterMode = FilterMode.Bilinear;
+        tex.anisoLevel = 2;
+        tex.hideFlags = HideFlags.DontSave;
+
+        // Периоды кратны размеру тайла, поэтому текстура стыкуется без шва
+        // по всем трём осям.
+        int[] periods = { 4, 8, 16, 32 };
+        float[] weights = { 0.55f, 0.27f, 0.13f, 0.05f };
+
+        Color[] pixels = new Color[size * size * size];
+        int index = 0;
+
+        for (int z = 0; z < size; z++)
+        {
+            float w = z / (float)size;
+            for (int y = 0; y < size; y++)
+            {
+                float v = y / (float)size;
+                for (int x = 0; x < size; x++)
+                {
+                    float u = x / (float)size;
+                    float n = 0f;
+
+                    for (int o = 0; o < periods.Length; o++)
+                    {
+                        int period = periods[o];
+                        n += ValueNoise3D(
+                            u * period, v * period, w * period,
+                            period, 1337 + o * 101) * weights[o];
+                    }
+
+                    // Чуть повышаем контраст: клочья должны читаться,
+                    // а не быть серым шумом. 1.15 — мягче, чем в 1.14.0.
+                    n = Mathf.Clamp01((n - 0.5f) * 1.15f + 0.5f);
+                    pixels[index++] = new Color(n, n, n, 1f);
+                }
+            }
+        }
+
+        tex.SetPixels(pixels);
+        tex.Apply(true, true);
+        return tex;
+    }
+
+    // Гладкий 3D value-noise с заворотом координат по периоду: соседние
+    // тайлы продолжают друг друга, поэтому на стыке нет видимого шва.
+    private static float ValueNoise3D(float x, float y, float z, int period, int seed)
+    {
+        int x0 = Mathf.FloorToInt(x);
+        int y0 = Mathf.FloorToInt(y);
+        int z0 = Mathf.FloorToInt(z);
+        float fx = x - x0;
+        float fy = y - y0;
+        float fz = z - z0;
+
+        // Квинтическая сглаживающая кривая: мягче кубической, меньше
+        // «квадратности» у крупных клочьев.
+        fx = fx * fx * fx * (fx * (fx * 6f - 15f) + 10f);
+        fy = fy * fy * fy * (fy * (fy * 6f - 15f) + 10f);
+        fz = fz * fz * fz * (fz * (fz * 6f - 15f) + 10f);
+
+        int xa = Wrap(x0, period);
+        int xb = Wrap(x0 + 1, period);
+        int ya = Wrap(y0, period);
+        int yb = Wrap(y0 + 1, period);
+        int za = Wrap(z0, period);
+        int zb = Wrap(z0 + 1, period);
+
+        float v000 = Hash01(xa, ya, za, seed);
+        float v100 = Hash01(xb, ya, za, seed);
+        float v010 = Hash01(xa, yb, za, seed);
+        float v110 = Hash01(xb, yb, za, seed);
+        float v001 = Hash01(xa, ya, zb, seed);
+        float v101 = Hash01(xb, ya, zb, seed);
+        float v011 = Hash01(xa, yb, zb, seed);
+        float v111 = Hash01(xb, yb, zb, seed);
+
+        float a = Mathf.Lerp(v000, v100, fx);
+        float b = Mathf.Lerp(v010, v110, fx);
+        float c = Mathf.Lerp(v001, v101, fx);
+        float d = Mathf.Lerp(v011, v111, fx);
+
+        float ab = Mathf.Lerp(a, b, fy);
+        float cd = Mathf.Lerp(c, d, fy);
+        return Mathf.Lerp(ab, cd, fz);
+    }
+
+    private static int Wrap(int v, int period)
+    {
+        int m = v % period;
+        return m < 0 ? m + period : m;
+    }
+
+    private static float Hash01(int x, int y, int z, int seed)
+    {
+        unchecked
+        {
+            uint h = (uint)(x * 374761393 + y * 668265263 + z * 1442695041 + seed * 69069);
+            h = (h ^ (h >> 13)) * 1274126177u;
+            h ^= h >> 16;
+            return (h & 0xFFFFFFu) / 16777215f;
         }
     }
 }

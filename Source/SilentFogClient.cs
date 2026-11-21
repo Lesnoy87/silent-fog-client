@@ -200,7 +200,7 @@ internal static class AshStorm
 // Настройки тумана. Значения одинаковые у всех: хост меняет — уходит всем.
 internal static class FogSettings
 {
-    public const float DefaultOutdoor = 0.75f;
+    public const float DefaultOutdoor = 0.94f;
     // В помещении по умолчанию почти чисто: туман не должен «протекать» в дом.
     public const float DefaultIndoor = 0.10f;
     public const float DefaultClosedVehicle = 0.30f;
@@ -211,6 +211,10 @@ internal static class FogSettings
     public const float OffDensity = 0.05f;
 
     public static bool Enabled = true;
+    // Локальная диагностика: 0 — выкл, 1 — чистая доля пути, 2 — зенит.
+    public static int DebugMode = 0;
+    // Хост-замок: клиенты не могут выключить туман/дистанцию у себя.
+    public static bool ForceForClients = true;
     public static float Outdoor = DefaultOutdoor;
     public static float Indoor = DefaultIndoor;
     public static float ClosedVehicle = DefaultClosedVehicle;
@@ -233,8 +237,8 @@ internal static class FogSettings
     // Свой туман по расстоянию (пост-эффект на камере).
     // Шейдер в AssetBundle, грузится в DistanceFog.
     public static bool DistanceOn = true;
-    public static float DistanceStart = 12f;   // метров
-    public static float DistanceEnd = 80f;     // метров
+    public static float DistanceStart = 8f;    // метров
+    public static float DistanceEnd = 35f;     // метров
 
     // Насколько сильно подкрашивать туман под биом (0 — ванильный цвет).
     public static float BiomeTint = 0.55f;
@@ -244,6 +248,12 @@ internal static class FogSettings
     public static bool LiveOn = true;
     public static float LiveAmount = 0.35f;   // 0..1: кромка ±8 м, плотность ±25% (база −15%)
 
+    // Динамика: мировые клочья тумана. FBM-шум в шейдере, координаты — XZ мира.
+    // Amount 1.0 — плотность гуляет примерно на ±22% (с мягкими краями).
+    public static bool DynamicOn = true;
+    public static float DynamicAmount = 0.60f;
+    public static float DynamicSpeed = 0.45f;
+
     // Ночь орды: туман краснеет и плотнеет. HordeFog — сила эффекта 0..1.
     public static bool HordeFogOn = true;
     public static float HordeFog = 0.7f;
@@ -251,6 +261,7 @@ internal static class FogSettings
     // CVar-имена синхронизации. Вандальные NetPackageModifyCVar, свой пакет
     // регистрировать не нужно — клиенты без мода просто ничего не заметят.
     public const string CvarEnabled = "sf_fog_on";
+    public const string CvarForce = "sf_force";
     public const string CvarOutdoor = "sf_fog_out";
     public const string CvarIndoor = "sf_fog_in";
     public const string CvarClosed = "sf_fog_veh_closed";
@@ -269,10 +280,14 @@ internal static class FogSettings
     public const string CvarLiveAmount = "sf_live_amount";
     public const string CvarHordeOn = "sf_horde_on";
     public const string CvarHordeFog = "sf_horde_fog";
+    public const string CvarDynamicOn = "sf_dynamic_on";
+    public const string CvarDynamicAmount = "sf_dynamic_amount";
+    public const string CvarDynamicSpeed = "sf_dynamic_speed";
 
     private static bool dirty;
     private static float nextSend;
     private static float nextHeartbeat;
+    private static float nextForce;
     private static float nextRead;
 
     // Пришли ли настройки от хоста (для диагностики в меню).
@@ -345,9 +360,26 @@ internal static class FogSettings
             HordeFogOn = buffs.GetCustomVar(CvarHordeOn) >= 0.5f;
         if (buffs.HasCustomVar(CvarHordeFog))
             HordeFog = Clamp01(buffs.GetCustomVar(CvarHordeFog));
+        if (buffs.HasCustomVar(CvarDynamicOn))
+            DynamicOn = buffs.GetCustomVar(CvarDynamicOn) >= 0.5f;
+        if (buffs.HasCustomVar(CvarDynamicAmount))
+            DynamicAmount = Clamp01(buffs.GetCustomVar(CvarDynamicAmount));
+        if (buffs.HasCustomVar(CvarDynamicSpeed))
+            DynamicSpeed = Clamp01(buffs.GetCustomVar(CvarDynamicSpeed));
 
         // Внутри не должно быть плотнее, чем на улице.
         if (Indoor > Outdoor) Indoor = Outdoor;
+
+        // Хост-замок: даже если клиент выставил sf_fog_on/sf_distance_on
+        // в 0, туман остаётся включённым. Силу не даём уронить в ноль.
+        bool force = buffs.HasCustomVar(CvarForce)
+            && buffs.GetCustomVar(CvarForce) >= 0.5f;
+        if (force)
+        {
+            Enabled = true;
+            DistanceOn = true;
+            if (Outdoor < 0.5f) Outdoor = 0.5f;
+        }
     }
 
     public static void MarkDirty()
@@ -378,6 +410,31 @@ internal static class FogSettings
             nextHeartbeat = Time.time + 5f;
             Broadcast(world);
         }
+
+        // Хост-замок: короткий heartbeat только для force/enabled/distance,
+        // чтобы клиент не мог отключить туман дольше ~1.5 с.
+        if (ForceForClients && Enabled && DistanceOn
+            && Time.time >= nextForce)
+        {
+            nextForce = Time.time + 1.5f;
+            BroadcastForce(world);
+        }
+    }
+
+    private static void BroadcastForce(World world)
+    {
+        if (world == null) return;
+        var players = world.Players.list;
+        for (int i = 0; i < players.Count; i++)
+        {
+            EntityPlayer player = players[i];
+            if (player == null || player.Buffs == null) continue;
+
+            Send(player, CvarForce, 1f);
+            Send(player, CvarEnabled, 1f);
+            Send(player, CvarDistanceOn, 1f);
+            Send(player, CvarOutdoor, Outdoor);
+        }
     }
 
     public static void Broadcast(World world)
@@ -390,6 +447,8 @@ internal static class FogSettings
             if (player == null || player.Buffs == null) continue;
 
             Send(player, CvarEnabled, Enabled ? 1f : 0f);
+            Send(player, CvarForce,
+                (ForceForClients && Enabled && DistanceOn) ? 1f : 0f);
             Send(player, CvarOutdoor, Outdoor);
             Send(player, CvarIndoor, Indoor);
             Send(player, CvarClosed, ClosedVehicle);
@@ -406,6 +465,9 @@ internal static class FogSettings
             Send(player, CvarLiveAmount, LiveAmount);
             Send(player, CvarHordeOn, HordeFogOn ? 1f : 0f);
             Send(player, CvarHordeFog, HordeFog);
+            Send(player, CvarDynamicOn, DynamicOn ? 1f : 0f);
+            Send(player, CvarDynamicAmount, DynamicAmount);
+            Send(player, CvarDynamicSpeed, DynamicSpeed);
         }
     }
 
@@ -419,6 +481,7 @@ internal static class FogSettings
     public static void ResetToDefaults()
     {
         Enabled = true;
+        ForceForClients = true;
         Outdoor = DefaultOutdoor;
         Indoor = DefaultIndoor;
         ClosedVehicle = DefaultClosedVehicle;
@@ -428,13 +491,16 @@ internal static class FogSettings
         NightSoftening = DefaultNightSoftening;
         UseShelter = true;
         DistanceOn = true;
-        DistanceStart = 12f;
-        DistanceEnd = 80f;
+        DistanceStart = 8f;
+        DistanceEnd = 35f;
         BiomeTint = 0.55f;
         LiveOn = true;
         LiveAmount = 0.35f;
         HordeFogOn = true;
         HordeFog = 0.7f;
+        DynamicOn = true;
+        DynamicAmount = 0.60f;
+        DynamicSpeed = 0.45f;
         MarkDirty();
     }
 
@@ -452,15 +518,15 @@ internal static class FogSettings
 
             case 1: // средний (дефолт)
                 Outdoor = DefaultOutdoor;
-                DistanceStart = 12f;
-                DistanceEnd = 80f;
+                DistanceStart = 8f;
+                DistanceEnd = 35f;
                 BiomeTint = 0.55f;
                 break;
 
             case 2: // плотный
-                Outdoor = 0.90f;
+                Outdoor = 0.96f;
                 DistanceStart = 8f;
-                DistanceEnd = 50f;
+                DistanceEnd = 35f;
                 BiomeTint = 0.70f;
                 break;
 
@@ -531,6 +597,7 @@ internal static class FogSettings
                 switch (key)
                 {
                     case "enabled": Enabled = num >= 0.5f; break;
+                    case "force": ForceForClients = num >= 0.5f; break;
                     case "outdoor": Outdoor = Clamp01(num); break;
                     case "indoor": Indoor = Clamp01(num); break;
                     case "closed": ClosedVehicle = Clamp01(num); break;
@@ -547,6 +614,9 @@ internal static class FogSettings
                     case "live_amount": LiveAmount = Clamp01(num); break;
                     case "horde_on": HordeFogOn = num >= 0.5f; break;
                     case "horde_fog": HordeFog = Clamp01(num); break;
+                    case "dynamic_on": DynamicOn = num >= 0.5f; break;
+                    case "dynamic_amount": DynamicAmount = Clamp01(num); break;
+                    case "dynamic_speed": DynamicSpeed = Clamp01(num); break;
                 }
             }
         }
@@ -562,13 +632,15 @@ internal static class FogSettings
         {
             string text = string.Format(
                 System.Globalization.CultureInfo.InvariantCulture,
-                "enabled={0}\noutdoor={1}\nindoor={2}\nclosed={3}\nopen={4}\nstorm={5}\nstorm_density={6}\nnight_fog={7}\nshelter={8}\ndistance={9}\ndistance_start={10}\ndistance_end={11}\nbiome_tint={12}\nlive={13}\nlive_amount={14}\nhorde_on={15}\nhorde_fog={16}\n",
+                "enabled={0}\noutdoor={1}\nindoor={2}\nclosed={3}\nopen={4}\nstorm={5}\nstorm_density={6}\nnight_fog={7}\nshelter={8}\ndistance={9}\ndistance_start={10}\ndistance_end={11}\nbiome_tint={12}\nlive={13}\nlive_amount={14}\nhorde_on={15}\nhorde_fog={16}\ndynamic_on={17}\ndynamic_amount={18}\ndynamic_speed={19}\nforce={20}\n",
                 Enabled ? "1" : "0", Outdoor, Indoor, ClosedVehicle, OpenVehicle,
                 StormEnabled ? "1" : "0", StormDensity, NightSoftening,
                 UseShelter ? "1" : "0",
                 DistanceOn ? "1" : "0", DistanceStart, DistanceEnd, BiomeTint,
                 LiveOn ? "1" : "0", LiveAmount,
-                HordeFogOn ? "1" : "0", HordeFog);
+                HordeFogOn ? "1" : "0", HordeFog,
+                DynamicOn ? "1" : "0", DynamicAmount, DynamicSpeed,
+                ForceForClients ? "1" : "0");
             File.WriteAllText(SettingsPath, text);
         }
         catch
@@ -610,8 +682,8 @@ internal static class HordeNight
         bool active;
         bool known = TryBloodMoon(world, out active);
 
-        // 1. Орда идёт — полный красный. Флаг игры честно гаснет после
-        //    последней волны, поэтому не надо ждать рассвета.
+        // 1. Орда идёт — полный красный. Флаг игры честно гаснет, когда орда
+        //    заканчивается, поэтому ждать рассвета не нужно.
         if (known && active)
         {
             lastActive = Time.time;
@@ -754,6 +826,14 @@ internal static class FogDensityLogic
     private static float cachedPoiDistance = float.MaxValue;
     private static Vector3 lastCheckPosition;
 
+    // Уличная плотность текущего кадра (с бурей/ночью) — для интерьера.
+    private static float outdoorDensity = FogSettings.DefaultOutdoor;
+    // Гистерезис «внутри»: не дёргается на пороге двери/окна.
+    private static bool insideLatched;
+    private static float insideClearTimer;
+    // Латч трейдера: сейф-зона не должна мигать на границе.
+    private static float traderLatchUntil;
+
     private static bool arkReflectionChecked;
     private static MethodInfo arkInCabinMethod;
 
@@ -785,9 +865,24 @@ internal static class FogDensityLogic
 
         if (!FogSettings.Enabled)
         {
+            FogObstacles.Reset();
+            DistanceFog.FollowLag = true;
+
             if (DistanceFog.Available) DistanceFog.Apply(0f, 0f, 0f);
             AppliedDensity = FogSettings.OffDensity;
             return FogSettings.OffDensity;
+        }
+
+        // «Сила тумана» = 0% должна выключать туман полностью, а не оставлять
+        // слабую «домашнюю» дымку через Indoor/interior fallback.
+        if (FogSettings.Outdoor <= 0.001f)
+        {
+            FogObstacles.Reset();
+            DistanceFog.FollowLag = true;
+
+            if (DistanceFog.Available) DistanceFog.Apply(0f, 0f, 0f);
+            AppliedDensity = 0f;
+            return 0f;
         }
 
         // Свой туман по расстоянию: ванильную экспоненту гасим в ноль,
@@ -818,17 +913,59 @@ internal static class FogDensityLogic
         // поэтому буря, ночь и транспорт продолжают работать.
         if (FogSettings.DistanceOn && DistanceFog.Available)
         {
+            // Один раз в кадр: обновляем боксы и укрытие.
+            UpdateShelterLatch(player);
+            FogObstacles.Update(player, DistanceFog.CamGame,
+                FogSettings.DistanceEnd, insideLatched);
+
             float street = Mathf.Max(FogSettings.Outdoor, 0.05f);
             float protection = Mathf.Clamp01(1f - FogSettings.Indoor / street);
 
             // Чем выше «Защита помещения», тем дальше уезжает начало тумана
             // под крышей: 100% — туман внутрь не достаёт вообще.
             DistanceFog.Apply(AppliedDensity, ShelterPercent / 100f, protection * 60f);
-            CurrentMode = "туман по расстоянию";
+
+            CurrentMode = FogObstacles.InsideKind >= 0
+                ? "одеяло: внутри ("
+                    + FogObstacles.KindName(FogObstacles.InsideKind) + ") "
+                    + Mathf.RoundToInt(FogObstacles.InsideWeight * 100f) + "%"
+                : (FogObstacles.Count > 0
+                    ? "одеяло: объёмов " + FogObstacles.Count
+                    : "туман по расстоянию");
             return 0f;
         }
 
+        FogObstacles.Reset();
+        DistanceFog.FollowLag = true;
+
+        // Режим своего шейдера выключен: гасим пост-эффект, иначе он
+        // останется с прошлой силой и сложится с ванильным туманом.
+        if (DistanceFog.Available) DistanceFog.Apply(0f, 0f, 0f);
+
         return AppliedDensity;
+    }
+
+    // Гистерезис укрытия: на пороге/у окна укрытие может мигать 0/0.4/1.
+    private static void UpdateShelterLatch(EntityPlayerLocal player)
+    {
+        float shelter = ShelterFactor(player);
+
+        if (shelter > 0.35f)
+        {
+            insideLatched = true;
+            insideClearTimer = 0f;
+        }
+        else if (shelter < 0.15f)
+        {
+            insideClearTimer += Time.deltaTime;
+            if (insideClearTimer > 0.5f) insideLatched = false;
+        }
+    }
+
+    // Уличная плотность текущего кадра — для тумана снаружи окон/боксов.
+    public static float OutdoorDensity
+    {
+        get { return outdoorDensity; }
     }
 
     private static float GetGroundDensity(EntityPlayerLocal player)
@@ -837,6 +974,26 @@ internal static class FogDensityLogic
         // В домах с проёмом/балконом isIndoorsCurrent врёт, поэтому
         // дополнительно смотрим, есть ли блок над головой.
         float shelter = ShelterFactor(player);
+
+        // Уличная плотность нужна и для интерьера (маска/стены/трейдер),
+        // поэтому считаем её до ранних возвратов.
+        float outdoor = FogSettings.Outdoor;
+        float storm = AshStorm.EffectiveStrength;
+        if (storm > 0.001f)
+        {
+            outdoor = Mathf.Lerp(outdoor, FogSettings.StormDensity, storm);
+        }
+
+        if (ModCompat.DifRUSTInstalled)
+        {
+            float night = FogSettings.NightAmount();
+            if (night > 0.001f)
+            {
+                outdoor *= Mathf.Lerp(1f, FogSettings.NightSoftening, night);
+            }
+        }
+
+        outdoorDensity = outdoor;
 
         if (shelter >= 0.999f)
         {
@@ -870,26 +1027,6 @@ internal static class FogDensityLogic
         }
 
         CurrentMode = "улица";
-
-        float outdoor = FogSettings.Outdoor;
-
-        // Пепельная буря усиливает уличный туман.
-        float storm = AshStorm.EffectiveStrength;
-        if (storm > 0.001f)
-        {
-            outdoor = Mathf.Lerp(outdoor, FogSettings.StormDensity, storm);
-        }
-
-        // DifRUST делает ночь почти чёрной. Если он установлен,
-        // ночью ослабляем уличный туман, чтобы не было «чёрной стены».
-        if (ModCompat.DifRUSTInstalled)
-        {
-            float night = FogSettings.NightAmount();
-            if (night > 0.001f)
-            {
-                outdoor *= Mathf.Lerp(1f, FogSettings.NightSoftening, night);
-            }
-        }
 
         float result;
         if (cachedPoiDistance < FadeEndRadius)
@@ -1009,18 +1146,56 @@ internal static class FogDensityLogic
     // Территория торговца (сейф-зона) по данным игры.
     private static bool IsInTraderSafeZone(EntityPlayerLocal player)
     {
+        if (Time.time < traderLatchUntil) return true;
+
         try
         {
             World world = player.world;
             if (world == null) return false;
 
             Vector3i pos = World.worldToBlockPos(player.position);
-            return world.IsWithinTraderArea(pos);
+            if (world.IsWithinTraderArea(pos))
+            {
+                traderLatchUntil = Time.time + 0.5f;
+                return true;
+            }
+
+            // Protect-прямоугольник уже, чем двор/дорога трейдера. Проверяем
+            // весь trader-префаб с запасом 12 м, чтобы сейф-зона ловилась
+            // не только внутри забора.
+            var areas = world.TraderAreas;
+            if (areas != null)
+            {
+                for (int i = 0; i < areas.Count; i++)
+                {
+                    TraderArea ta = areas[i];
+                    if (ta == null) continue;
+
+                    Vector3i p = ta.Position;
+                    Vector3i s = ta.PrefabSize;
+                    const float margin = 2f;
+
+                    if (player.position.x < p.x - margin ||
+                        player.position.x > p.x + s.x + margin ||
+                        player.position.z < p.z - margin ||
+                        player.position.z > p.z + s.z + margin)
+                        continue;
+
+                    if (player.position.y < p.y - 12f ||
+                        player.position.y > p.y + s.y + 20f)
+                        continue;
+
+                    traderLatchUntil = Time.time + 0.5f;
+                    return true;
+                }
+            }
         }
         catch
         {
-            return false;
+            // Если API трейдеров изменится — остаёмся на IsWithinTraderArea.
         }
+
+        return false;
     }
 
     // Строгая проверка укрытия.
@@ -1042,7 +1217,9 @@ internal static class FogDensityLogic
     // может быть false, хотя игрок стоит под крышей.
     private static float ShelterFactor(EntityPlayerLocal player)
     {
-        if (player.isIndoorsCurrent) return 1f;
+        // НЕ доверяем player.isIndoorsCurrent: под кроной деревьев игра
+        // иногда ставит true, и туман начинал вести себя как в доме.
+        // Наши лучи по блокам уже игнорируют листву и декорации.
         if (!FogSettings.UseShelter) return 0f;
 
         if (!StrictShelter)
@@ -1079,10 +1256,17 @@ internal static class FogDensityLogic
 
             Vector3i p = World.worldToBlockPos(new Vector3(pos.x + ox, pos.y + 0.2f, pos.z + oz));
 
-            for (int dy = 2; dy <= 8; dy++)
+            for (int dy = 2; dy <= 16; dy++)
             {
                 BlockValue bv = world.GetBlock(p.x, p.y + dy, p.z);
                 if (bv.isair) continue;
+
+                // Листва, трава и декорации — не крыша. Иначе в лесу игрок
+                // «под крышей», и туман уезжает/прячется за деревьями.
+                Block block = bv.Block;
+                if (block == null || block.bIsPlant) continue;
+                if (block.blockMaterial != null && !block.blockMaterial.IsCollidable)
+                    continue;
 
                 covered[i] = true;
                 hits++;
@@ -1092,8 +1276,9 @@ internal static class FogDensityLogic
 
         // Главное правило: если над самим игроком (центральная точка) неба нет,
         // это укрытие. Если центр открыт — мы на улице, даже если края пятна
-        // задевают свес крыши или карниз у стены.
-        if (!covered[0])
+        // задевают свес крыши или карниз у стены. Исключение — высокий атриум/
+        // световой люк: 3+ боковых луча перекрыты, считаем помещением.
+        if (!covered[0] && hits < 3)
         {
             shelterCached = 0f;
             return shelterCached;
@@ -1271,7 +1456,7 @@ public class FogMenuBehaviour : MonoBehaviour
     // Прокрутка тела панели: настроек больше, чем помещается в окно.
     private Vector2 scrollPos;
     private const float ScrollBodyTop = 56f;
-    private const float ScrollContentHeight = 1250f;
+    private const float ScrollContentHeight = 1520f;
 
     private Texture2D panelTex;
     private Texture2D accentTex;
@@ -1456,6 +1641,15 @@ public class FogMenuBehaviour : MonoBehaviour
                 toggleStyle
             );
             if (was != FogSettings.Enabled) FogSettings.MarkDirty();
+
+            bool wasForce = FogSettings.ForceForClients;
+            FogSettings.ForceForClients = GUI.Toggle(
+                new Rect(18f, y + 26f, w - 36f, 24f),
+                FogSettings.ForceForClients,
+                "  Клиенты не могут отключить туман",
+                toggleStyle);
+            if (wasForce != FogSettings.ForceForClients)
+                FogSettings.MarkDirty();
         }
         else
         {
@@ -1466,7 +1660,7 @@ public class FogMenuBehaviour : MonoBehaviour
                 FogSettings.Synced ? okStyle : hintStyle);
         }
 
-        y += 40f;
+        y += host ? 68f : 40f;
         GUI.enabled = host && FogSettings.Enabled;
 
         // --- пресеты ---
@@ -1515,6 +1709,40 @@ public class FogMenuBehaviour : MonoBehaviour
             y += 16f;
         }
 
+        // --- динамика: мировые клочья ---
+        GUI.Label(new Rect(18f, y, w - 36f, 18f), "ДИНАМИКА ТУМАНА", sectionStyle);
+        y += 20f;
+
+        {
+            bool wasEnabled = GUI.enabled;
+            GUI.enabled = host && FogSettings.Enabled;
+
+            bool was = FogSettings.DynamicOn;
+            FogSettings.DynamicOn = DrawToggle(
+                new Rect(18f, y, w - 36f, 22f),
+                FogSettings.DynamicOn,
+                "Клочья тумана в мире (ветер)");
+            if (was != FogSettings.DynamicOn) FogSettings.MarkDirty();
+
+            GUI.enabled = wasEnabled;
+        }
+        y += 28f;
+
+        {
+            bool wasEnabled = GUI.enabled;
+            GUI.enabled = host && FogSettings.Enabled && FogSettings.DynamicOn;
+
+            y = DrawRow(y, w, "Амплитуда клочьев", ref FogSettings.DynamicAmount);
+            y = DrawRow(y, w, "Скорость ветра", ref FogSettings.DynamicSpeed);
+
+            GUI.enabled = wasEnabled;
+
+            GUI.Label(new Rect(18f, y - 6f, w - 36f, 32f),
+                "Клочья живут в мире и плывут по ветру: на 100% плотность гуляет примерно на ±22%. Идёт от хоста.",
+                hintStyle);
+            y += 30f;
+        }
+
         y = DrawRow(y, w, "Оттенок биома", ref FogSettings.BiomeTint);
 
         // Ночь орды: туман краснеет и наезжает заранее, ещё до 22:00.
@@ -1544,20 +1772,25 @@ public class FogMenuBehaviour : MonoBehaviour
             new Rect(18f, y, w - 36f, 20f),
             string.Format("Сейчас: {0} · сила {1}% · укрытие {2}%",
                 FogDensityLogic.CurrentMode ?? "—",
-                Mathf.RoundToInt(Mathf.Clamp01(FogDensityLogic.AppliedDensity) * 100f),
+                Mathf.RoundToInt(Mathf.Clamp01(DistanceFog.ActiveStrength) * 100f),
                 Mathf.RoundToInt(FogDensityLogic.ShelterPercent)),
             hintStyle
         );
         y += 18f;
 
         GUI.Label(
-            new Rect(18f, y, w - 36f, 20f),
-            string.Format("дыхание {0}% · орда {1}%",
+            new Rect(18f, y, w - 36f, 50f),
+            string.Format("дыхание {0}% · орда {1}%\nклочья {2}% · ветер {3:0.0} м/с\nтуман {4:0}–{5:0} м · центр {6:0.0} м",
                 Mathf.RoundToInt(Mathf.Clamp01(DistanceFog.LiveFactor) * 100f),
-                Mathf.RoundToInt(Mathf.Clamp01(DistanceFog.HordeAmount) * 100f)),
+                Mathf.RoundToInt(Mathf.Clamp01(DistanceFog.HordeAmount) * 100f),
+                Mathf.RoundToInt(DistanceFog.DynamicLive * 100f),
+                DistanceFog.WindSpeed,
+                DistanceFog.ActiveStart,
+                DistanceFog.ActiveEnd,
+                DistanceFog.CenterOffset),
             hintStyle
         );
-        y += 20f;
+        y += 50f;
 
         GUI.Label(new Rect(18f, y, w - 36f, 20f),
             "Шейдер: " + DistanceFog.Status + " · частицы: " + DistanceFog.ParticleStatus, hintStyle);
@@ -1656,6 +1889,18 @@ public class FogMenuBehaviour : MonoBehaviour
             GUI.Label(new Rect(18f, y, w - 36f, 36f),
                 "DifRUST не найден: ночное ослабление выключено.", hintStyle);
             y += 30f;
+        }
+
+        if (host)
+        {
+            bool wasDebug = FogSettings.DebugMode > 0;
+            bool debugNow = DrawToggle(
+                new Rect(18f, y, w - 36f, 22f),
+                wasDebug,
+                "Отладка: зенит (2)");
+            if (debugNow != wasDebug)
+                FogSettings.DebugMode = debugNow ? 2 : 0;
+            y += 28f;
         }
 
         if (GUI.Button(new Rect(18f, y, 150f, 30f), "Сбросить", buttonStyle) && host)

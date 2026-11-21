@@ -24,7 +24,8 @@ internal static class BiomeFog
         if (strength <= 0.001f) return vanilla;
 
         Color target;
-        if (!TryPalette(player, out target)) target = vanilla;
+        bool palette = TryPalette(player, out target);
+        if (!palette) target = vanilla;
 
         if (!started)
         {
@@ -35,10 +36,29 @@ internal static class BiomeFog
         // Плавный переход при входе в биом: ~1.5 секунды.
         current = Color.Lerp(current, target, Mathf.Clamp01(Time.deltaTime * 0.7f));
 
-        Color scaled = KeepLuma(current, vanilla);
-        scaled = Saturate(scaled, Vividness);
+        // Для нейтральных биомов (лес/равнины/город) не сатурируем ванильный
+        // цвет: иначе синева неба становится только сильнее.
+        Color scaled = palette
+            ? Saturate(KeepLuma(current, vanilla), Vividness)
+            : current;
 
         Color result = Color.Lerp(vanilla, scaled, strength);
+        result.a = 1f;
+        return result;
+    }
+
+    // Молочный нейтральный оттенок: убираем лишнюю синеву, сохраняя яркость.
+    // Ночью туман остаётся тёмным, днём — белёсым.
+    public static Color Milkify(Color c)
+    {
+        float l = 0.299f * c.r + 0.587f * c.g + 0.114f * c.b;
+        Color milk = new Color(
+            Mathf.Clamp01(l * 1.12f + 0.05f),
+            Mathf.Clamp01(l * 1.07f + 0.05f),
+            Mathf.Clamp01(l * 1.02f + 0.05f),
+            1f);
+
+        Color result = Color.Lerp(c, milk, 0.80f);
         result.a = 1f;
         return result;
     }
