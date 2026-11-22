@@ -112,9 +112,9 @@ Shader "Hidden/SilentFog/DistanceFog"
                 float3 k = float3(1.0, _FogEdge.y, 1.0);
                 float eo = max(edge + shift, 0.25);
                 float ei = max(edge - shift, 0.25);
-                float3 half3 = (bmax - bmin) * 0.5;
+                float3 hsize = (bmax - bmin) * 0.5;
                 float3 eoV = eo * k;
-                float3 eiV = min(ei * k, half3 * 0.45);
+                float3 eiV = min(ei * k, hsize * 0.45);
                 float a = ChordFrac(bmin - eoV, bmax + eoV, invD);
                 float b = ChordFrac(bmin + eiV, bmax - eiV, invD);
                 return 0.5 * (a + b);
@@ -209,6 +209,11 @@ Shader "Hidden/SilentFog/DistanceFog"
 
                 // Доля пути внутри чистых объёмов (боксы зданий/торговца/базы).
                 float cleanFrac = 0.0;
+                // Насколько сама поверхность (пиксель) находится внутри объёма.
+                // Нужно для дальнего тумана: гасить его можно только когда
+                // чистая поверхность — иначе лучи, пролетавшие через claim,
+                // вырезали туман вдали (рваный кусок над холмом).
+                float insideEnd = 0.0;
                 [branch] if (_FogBoxCount > 0.5 && isSky < 0.5)
                 {
                     float3 sD = D + lerp(-1e-4, 1e-4, step(0.0, D));
@@ -225,6 +230,14 @@ Shader "Hidden/SilentFog/DistanceFog"
                             cleanFrac += bmn.w * SoftChord(
                                 bmn.xyz + rel, bmx.xyz + rel, bmx.w,
                                 ni * _FogEdge.x, invD);
+
+                            // Точка поверхности внутри бокса? Мягкая граница 2 м.
+                            // Вес бокса учитываем: погасшая зона не должна
+                            // держать дальний туман выключенным.
+                            float3 q = max(bmn.xyz - wpos, wpos - bmx.xyz);
+                            float outD = length(max(q, 0.0));
+                            insideEnd = max(insideEnd, bmn.w *
+                                (1.0 - smoothstep(0.0, 2.0, outD)));
                         }
                     }
                     cleanFrac = saturate(cleanFrac);
@@ -279,9 +292,11 @@ Shader "Hidden/SilentFog/DistanceFog"
                 // Для далёких пикселей включаем полную плотность по глубине.
                 float farFog = saturate(
                     (eye - _FogEnd) / max(_FogEnd * 0.5, 1.0));
-                // Не перебиваем маску торговца/POI/базы: если луч уже
-                // прошёл внутри бокса, дальняя плотность не нужна.
-                farFog *= 1.0 - saturate(cleanFrac * 4.0);
+                // Не перебиваем маску торговца/POI/базы: дальняя плотность
+                // не нужна только тогда, когда сама поверхность внутри
+                // объёма. Раньше гасили по доле всего луча — и туман
+                // пропадал вдали за пределами базы (рваный кусок).
+                farFog *= 1.0 - insideEnd;
                 f = max(f, farFog);
 
                 f *= _FogStrength;

@@ -40,7 +40,7 @@ public class SilentFogImageEffect : MonoBehaviour
 
     private void OnRenderImage(RenderTexture source, RenderTexture destination)
     {
-        if (material == null)
+        if (material == null || (strength <= 0.001f && boxCount == 0))
         {
             Graphics.Blit(source, destination);
             return;
@@ -109,6 +109,9 @@ internal static class DistanceFog
     private const string BundleName = "silentfogfog";
     private const string ShaderName = "Hidden/SilentFog/DistanceFog";
     private const string ParticleShaderName = "Hidden/SilentFog/Particle";
+
+    // Версия бандла — для меню: видно, какой шейдер реально загружен.
+    public const string BundleTag = "1.20.0";
 
     private const int MaxParticles = 900;
 
@@ -193,6 +196,10 @@ internal static class DistanceFog
     public static float ActiveEnd { get; private set; }
     public static float CenterOffset { get; private set; }
     public static float ActiveStrength { get; private set; }
+
+    // Цвет тумана до и после наших поправок — чтобы видеть источник оттенка.
+    public static Color RawFogColor { get; private set; } = Color.white;
+    public static Color FinalFogColor { get; private set; } = Color.white;
 
     public static void Tick(EntityPlayerLocal player)
     {
@@ -490,7 +497,9 @@ internal static class DistanceFog
 
         effect.strength = smoothStrength;
         ActiveStrength = smoothStrength;
-        effect.dynamicAmount = dynamicOn * 0.30f;
+        // Клочья считаются в шейдере на каждый пиксель (4 tex3D). При нулевой
+        // плотности результат всё равно умножается на 0 — не тратим GPU.
+        effect.dynamicAmount = smoothStrength > 0.001f ? dynamicOn * 0.30f : 0f;
         effect.wind = wind;
         effect.center = centerEff;
         effect.worldOffset = localPlayer != null
@@ -502,13 +511,15 @@ internal static class DistanceFog
         effect.boxMax = FogObstacles.BoxMax;
         effect.boxCount = FogObstacles.Count;
         effect.debugMode = FogSettings.DebugMode;
+        RawFogColor = SkyManager.GetFogColor();
         Color fogColor = BiomeFog.Milkify(
-            BiomeFog.Apply(SkyManager.GetFogColor(), localPlayer));
+            BiomeFog.Apply(RawFogColor, localPlayer));
         if (horde > 0.001f)
         {
             // Бордовый, а не алый: алый в 7DTD уже занят вспышками взрывов.
             fogColor = Color.Lerp(fogColor, new Color(0.52f, 0.06f, 0.08f), horde * 0.8f);
         }
+        FinalFogColor = fogColor;
         effect.color = fogColor;
         effect.shelter = Mathf.Clamp01(shelter);
 

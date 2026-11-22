@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using HarmonyLib;
@@ -325,7 +326,12 @@ internal static class FogSettings
         nextRead = now + 0.2f;
 
         EntityBuffs buffs = player.Buffs;
-        if (!buffs.HasCustomVar(CvarEnabled))
+
+        // Готовность: ждём не только первый cvar, но и базовый набор.
+        // Иначе при частично пришедшем пакете Outdoor=0 и туман моргает.
+        if (!buffs.HasCustomVar(CvarEnabled)
+            || !buffs.HasCustomVar(CvarOutdoor)
+            || !buffs.HasCustomVar(CvarIndoor))
         {
             Synced = false;
             return;
@@ -335,12 +341,21 @@ internal static class FogSettings
         Enabled = buffs.GetCustomVar(CvarEnabled) >= 0.5f;
         Outdoor = Clamp01(buffs.GetCustomVar(CvarOutdoor));
         Indoor = Clamp01(buffs.GetCustomVar(CvarIndoor));
-        ClosedVehicle = Clamp01(buffs.GetCustomVar(CvarClosed));
-        OpenVehicle = Clamp01(buffs.GetCustomVar(CvarOpen));
-        StormEnabled = buffs.GetCustomVar(CvarStormOn) >= 0.5f;
-        StormDensity = Clamp01(buffs.GetCustomVar(CvarStormDensity));
-        NightSoftening = Clamp01(buffs.GetCustomVar(CvarNightFog));
-        UseShelter = buffs.GetCustomVar(CvarShelter) >= 0.5f;
+
+        // Остальные — только если хост их реально прислал (совместимость
+        // со старыми клиентами): иначе остаются текущие значения.
+        if (buffs.HasCustomVar(CvarClosed))
+            ClosedVehicle = Clamp01(buffs.GetCustomVar(CvarClosed));
+        if (buffs.HasCustomVar(CvarOpen))
+            OpenVehicle = Clamp01(buffs.GetCustomVar(CvarOpen));
+        if (buffs.HasCustomVar(CvarStormOn))
+            StormEnabled = buffs.GetCustomVar(CvarStormOn) >= 0.5f;
+        if (buffs.HasCustomVar(CvarStormDensity))
+            StormDensity = Clamp01(buffs.GetCustomVar(CvarStormDensity));
+        if (buffs.HasCustomVar(CvarNightFog))
+            NightSoftening = Clamp01(buffs.GetCustomVar(CvarNightFog));
+        if (buffs.HasCustomVar(CvarShelter))
+            UseShelter = buffs.GetCustomVar(CvarShelter) >= 0.5f;
 
         // Новые настройки: если хост их ещё не присылал (старый клиент),
         // остаются текущие локальные значения.
@@ -658,6 +673,11 @@ internal static class HordeNight
     private static float cached;
     private static float lastActive = -999f;
 
+    // Кэш дня орды: пересчитываем раз за игровой день и при смене мира.
+    private static int cachedBmDays = -1;
+    private static int cachedBmDay = -1;
+    private static World lastBmWorld;
+
     // Сколько секунд туман гаснет после последней волны.
     private const float FadeSeconds = 120f;
 
@@ -679,6 +699,12 @@ internal static class HordeNight
         World world = GameManager.Instance != null ? GameManager.Instance.World : null;
         if (world == null) return 0f;
 
+        // Хорда возможна только вечером и ночью. Днём рефлексию не дёргаем:
+        // раньше TryBloodMoon вызывался каждый кадр даже в полдень.
+        float evening = Evening(world);
+        bool fading = lastActive > 0f && Time.time - lastActive < FadeSeconds;
+        if (evening <= 0f && !fading) return 0f;
+
         bool active;
         bool known = TryBloodMoon(world, out active);
 
@@ -698,7 +724,6 @@ internal static class HordeNight
                 return 1f - Mathf.Clamp01(since / FadeSeconds);
         }
 
-        float evening = Evening(world);
         if (evening <= 0f) return 0f;
 
         // 3. Предчувствие: вечером того дня, когда будет орда — не полный цвет.
@@ -739,7 +764,123 @@ internal static class HordeNight
     private static bool IsHordeDay(World world)
     {
         int days = GameUtils.WorldTimeToDays(world.GetWorldTime());
-        return days > 0 && (days % 7) == 0;
+        if (days <= 0) return false;
+
+        // До 04:00 формально уже новый день, но ночь орды ещё идёт.
+        // Берём предыдущий день, иначе предчувствие обрывается в полночь.
+        float clock = Clock(world);
+        if (clock >= 0f && clock < 4f) days -= 1;
+
+        // 1) Штатный день орды из статов игры: учитывает частоту, разброс
+        //    и ручной перенос (bmDayNextOverride).
+        int hordeDay = HordeDay(world);
+        if (hordeDay > 0) return days == hordeDay;
+
+        // 2) Флаг «сегодня будет орда» — по нему красится счётчик дня.
+        bool flag;
+        if (TryBoolMember(world, "BloodMoonWarning", out flag) && flag)
+            return true;
+
+        // 3) Запасной путь — реальная частота из настроек мира, не константа 7.
+        int freq = BloodMoonFrequency();
+        return freq > 0 && (days % freq) == 0;
+    }
+
+    // День следующей/текущей орды. -1 — игра не сказала.
+    // Порядок: GameStat.BloodMoonDay → BloodMoonComponent (PropBloodMoonDay /
+    // _bmDay) → -1. Раньше здесь был days % 7, из-за чего в мире
+    // с BloodMoonFrequency = 5 туман краснел на 21-й день, а орда была на 24-й.
+    public static int HordeDay(World world)
+    {
+        if (!ReferenceEquals(world, lastBmWorld))
+        {
+            lastBmWorld = world;
+            cachedBmDays = -1;
+            cachedBmDay = -1;
+        }
+
+        int days = world != null
+            ? GameUtils.WorldTimeToDays(world.GetWorldTime())
+            : -1;
+        if (days == cachedBmDays) return cachedBmDay;
+
+        cachedBmDays = days;
+        int stat = GameStatHordeDay();
+        cachedBmDay = stat > 0 ? stat : ReadHordeDay(world);
+        return cachedBmDay;
+    }
+
+    private static int GameStatHordeDay()
+    {
+        try
+        {
+            int d = GameStats.GetInt(EnumGameStats.BloodMoonDay);
+            return d > 0 ? d : -1;
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
+    private static int ReadHordeDay(World world)
+    {
+        try
+        {
+            object ai = Member(world, "aiDirector");
+            object bm = ai != null ? Member(ai, "BloodMoonComponent") : null;
+            if (bm == null) return -1;
+
+            Type t = bm.GetType();
+            const BindingFlags F = BindingFlags.Public | BindingFlags.NonPublic
+                | BindingFlags.Instance;
+
+            // PropBloodMoonDay (текущая цель), _bmDay. bmDayLast — прошлая
+            // орда, его не берём: иначе «сегодня орда» срабатывает вчера.
+            string[] names = { "PropBloodMoonDay", "_bmDay", "bloodMoonDay", "BloodMoonDay" };
+            for (int i = 0; i < names.Length; i++)
+            {
+                PropertyInfo pi = t.GetProperty(names[i], F);
+                if (pi != null)
+                {
+                    int d = ToInt(pi.GetValue(bm, null));
+                    if (d > 0) return d;
+                }
+
+                FieldInfo fi = t.GetField(names[i], F);
+                if (fi != null)
+                {
+                    int d = ToInt(fi.GetValue(bm));
+                    if (d > 0) return d;
+                }
+            }
+        }
+        catch
+        {
+        }
+        return -1;
+    }
+
+    private static int BloodMoonFrequency()
+    {
+        try
+        {
+            return GamePrefs.GetInt(EnumGamePrefs.BloodMoonFrequency);
+        }
+        catch
+        {
+            return 7;
+        }
+    }
+
+    private static int ToInt(object v)
+    {
+        if (v is int) return (int)v;
+        if (v is float) return Mathf.RoundToInt((float)v);
+        if (v is double) return Mathf.RoundToInt((float)(double)v);
+        if (v is uint) return (int)(uint)v;
+        if (v is long) return (int)(long)v;
+        return -1;
     }
 
     private static bool TryBoolMember(World world, string name, out bool value)
@@ -790,19 +931,37 @@ internal static class HordeNight
         return false;
     }
 
+    // Кэш метаданных: type → (имя → свойство/поле). Без него каждый кадр
+    // шли GetProperty/GetField, хотя набор имён фиксированный.
+    private static readonly Dictionary<Type, Dictionary<string, MemberInfo>> memberCache =
+        new Dictionary<Type, Dictionary<string, MemberInfo>>(4);
+
     private static object Member(object target, string name)
     {
         if (target == null) return null;
         Type t = target.GetType();
 
-        System.Reflection.PropertyInfo p = t.GetProperty(name,
-            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
-            | System.Reflection.BindingFlags.Instance);
+        Dictionary<string, MemberInfo> map;
+        if (!memberCache.TryGetValue(t, out map))
+        {
+            map = new Dictionary<string, MemberInfo>(8);
+            memberCache[t] = map;
+        }
+
+        MemberInfo mi;
+        if (!map.TryGetValue(name, out mi))
+        {
+            const BindingFlags F = BindingFlags.Public | BindingFlags.NonPublic
+                | BindingFlags.Instance;
+            mi = t.GetProperty(name, F);
+            if (mi == null) mi = t.GetField(name, F);
+            map[name] = mi;
+        }
+
+        PropertyInfo p = mi as PropertyInfo;
         if (p != null) return p.GetValue(target, null);
 
-        System.Reflection.FieldInfo f = t.GetField(name,
-            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
-            | System.Reflection.BindingFlags.Instance);
+        FieldInfo f = mi as FieldInfo;
         return f != null ? f.GetValue(target) : null;
     }
 
@@ -851,7 +1010,36 @@ internal static class FogDensityLogic
     public static float AppliedDensity { get; private set; }
 
     // Возвращает желаемую плотность или -1, если мир/игрок ещё не готовы.
+    // Несколько Harmony-патчей зовут метод по несколько раз за кадр —
+    // считаем один раз, иначе таймеры (гистерезис укрытия) идут втрое
+    // быстрее, а строки статуса собираются зря.
+    private static int densityFrame = -1;
+    private static float densityCached = -1f;
+    private static bool densityErrorLogged;
+
     public static float GetDesiredDensity()
+    {
+        if (Time.frameCount == densityFrame) return densityCached;
+        densityFrame = Time.frameCount;
+
+        try
+        {
+            densityCached = ComputeDesiredDensity();
+        }
+        catch (Exception e)
+        {
+            densityCached = -1f;
+            if (!densityErrorLogged)
+            {
+                densityErrorLogged = true;
+                Debug.LogWarning("[SilentFog] density: " + e.Message);
+            }
+        }
+
+        return densityCached;
+    }
+
+    private static float ComputeDesiredDensity()
     {
         World world = FogSettings.CurrentWorld;
         EntityPlayerLocal player = world != null ? world.GetPrimaryPlayer() : null;
@@ -925,13 +1113,18 @@ internal static class FogDensityLogic
             // под крышей: 100% — туман внутрь не достаёт вообще.
             DistanceFog.Apply(AppliedDensity, ShelterPercent / 100f, protection * 60f);
 
-            CurrentMode = FogObstacles.InsideKind >= 0
-                ? "одеяло: внутри ("
-                    + FogObstacles.KindName(FogObstacles.InsideKind) + ") "
-                    + Mathf.RoundToInt(FogObstacles.InsideWeight * 100f) + "%"
-                : (FogObstacles.Count > 0
-                    ? "одеяло: объёмов " + FogObstacles.Count
-                    : "туман по расстоянию");
+            // Строку статуса собираем только при открытом меню: 3 вызова
+            // за кадр по 4 склейки — лишний мусор для GC.
+            if (FogMenuBehaviour.IsOpen)
+            {
+                CurrentMode = FogObstacles.InsideKind >= 0
+                    ? "одеяло: внутри ("
+                        + FogObstacles.KindName(FogObstacles.InsideKind) + ") "
+                        + Mathf.RoundToInt(FogObstacles.InsideWeight * 100f) + "%"
+                    : (FogObstacles.Count > 0
+                        ? "одеяло: объёмов " + FogObstacles.Count
+                        : "туман по расстоянию");
+            }
             return 0f;
         }
 
@@ -1220,7 +1413,13 @@ internal static class FogDensityLogic
         // НЕ доверяем player.isIndoorsCurrent: под кроной деревьев игра
         // иногда ставит true, и туман начинал вести себя как в доме.
         // Наши лучи по блокам уже игнорируют листву и декорации.
-        if (!FogSettings.UseShelter) return 0f;
+        if (!FogSettings.UseShelter)
+        {
+            // Кэш обязательно обнуляем: иначе после выключения настройки
+            // в Apply продолжает уходить старое «укрытие» и туман уезжает.
+            shelterCached = 0f;
+            return 0f;
+        }
 
         if (!StrictShelter)
         {
@@ -1294,6 +1493,7 @@ internal static class FogDensityLogic
         if (world == null) return float.MaxValue;
 
         DynamicPrefabDecorator decorator = world.ChunkCache != null
+            && world.ChunkCache.ChunkProvider != null
             ? world.ChunkCache.ChunkProvider.GetDynamicPrefabDecorator()
             : null;
         if (decorator == null || decorator.poiPrefabs == null) return float.MaxValue;
@@ -1451,12 +1651,14 @@ public class FogMenuBehaviour : MonoBehaviour
     }
 
     private bool open;
-    private Rect windowRect = new Rect(60f, 36f, 480f, 878f);
+    private Rect windowRect = new Rect(60f, 28f, 480f, 840f);
 
-    // Прокрутка тела панели: настроек больше, чем помещается в окно.
+    // Вкладки: вместо одного длинного скролла — три группы настроек.
+    private int tab;
+    private static readonly string[] TabNames = { "Основное", "Атмосфера", "Диагностика" };
+
+    // Прокрутка тела панели.
     private Vector2 scrollPos;
-    private const float ScrollBodyTop = 56f;
-    private const float ScrollContentHeight = 1520f;
 
     private Texture2D panelTex;
     private Texture2D accentTex;
@@ -1609,8 +1811,7 @@ public class FogMenuBehaviour : MonoBehaviour
         GUI.DrawTexture(new Rect(0f, 0f, w, 3f), accentTex, ScaleMode.StretchToFill);
         GUI.DrawTexture(new Rect(0f, h - 1f, w, 1f), accentTex, ScaleMode.StretchToFill);
 
-        float y = 12f;
-        GUI.Label(new Rect(18f, y, w - 70f, 26f), "SILENT FOG", titleStyle);
+        GUI.Label(new Rect(18f, 12f, w - 70f, 26f), "SILENT FOG", titleStyle);
 
         if (GUI.Button(new Rect(w - 38f, 10f, 26f, 24f), "x", buttonStyle))
         {
@@ -1618,38 +1819,87 @@ public class FogMenuBehaviour : MonoBehaviour
             return;
         }
 
-        y += 32f;
-        GUI.DrawTexture(new Rect(18f, y, w - 36f, 1f), rowTex, ScaleMode.StretchToFill);
+        GUI.DrawTexture(new Rect(18f, 44f, w - 36f, 1f), rowTex, ScaleMode.StretchToFill);
 
-        // Ниже шапки — прокручиваемая область: настроек стало больше, чем влезает.
+        // --- вкладки: три группы вместо одного длинного скролла ---
+        float tabW = (w - 36f - 8f) / TabNames.Length;
+        for (int i = 0; i < TabNames.Length; i++)
+        {
+            float tx = 18f + (tabW + 4f) * i;
+            if (GUI.Button(new Rect(tx, 52f, tabW, 26f), TabNames[i], buttonStyle) && tab != i)
+            {
+                tab = i;
+                scrollPos = Vector2.zero;
+            }
+
+            if (tab == i)
+            {
+                GUI.DrawTexture(new Rect(tx, 80f, tabW, 2f), accentTex, ScaleMode.StretchToFill);
+            }
+        }
+
+        const float bodyTop = 88f;
+        const float footer = 54f;
+
         scrollPos = GUI.BeginScrollView(
-            new Rect(0f, ScrollBodyTop, w, h - ScrollBodyTop),
+            new Rect(0f, bodyTop, w, h - bodyTop - footer),
             scrollPos,
-            new Rect(0f, 0f, w - 18f, ScrollContentHeight));
-
-        y = 0f;
+            new Rect(0f, 0f, w - 18f, TabHeight(tab)));
 
         bool host = FogSettings.IsHost;
+        float y = 4f;
 
+        if (tab == 0) y = DrawTabMain(y, w, host);
+        else if (tab == 1) y = DrawTabAtmo(y, w, host);
+        else y = DrawTabDiag(y, w, host);
+
+        GUI.EndScrollView();
+
+        // Нижняя панель: кнопки не уезжают при скролле и смене вкладки.
+        float by = h - 44f;
+        GUI.DrawTexture(new Rect(18f, by - 10f, w - 36f, 1f), rowTex, ScaleMode.StretchToFill);
+
+        GUI.enabled = host;
+        if (GUI.Button(new Rect(18f, by, 150f, 30f), "Сбросить", buttonStyle))
+        {
+            FogSettings.ResetToDefaults();
+        }
+        GUI.enabled = true;
+
+        if (GUI.Button(new Rect(178f, by, w - 196f, 30f), "Закрыть", buttonStyle))
+        {
+            Close();
+            return;
+        }
+
+        GUI.DragWindow(new Rect(0f, 0f, w, 46f));
+    }
+
+    private static float TabHeight(int t)
+    {
+        // Запас под содержимое вкладки: скролл не должен обрезать хвост.
+        if (t == 0) return 560f;
+        if (t == 1) return 700f;
+        return 300f;
+    }
+
+    // --- вкладка «Основное» ---
+    private float DrawTabMain(float y, float w, bool host)
+    {
         if (host)
         {
             bool was = FogSettings.Enabled;
             FogSettings.Enabled = GUI.Toggle(
-                new Rect(18f, y, w - 36f, 24f),
-                FogSettings.Enabled,
-                "  Туман включён",
-                toggleStyle
-            );
+                new Rect(18f, y, w - 36f, 24f), FogSettings.Enabled,
+                "  Туман включён", toggleStyle);
             if (was != FogSettings.Enabled) FogSettings.MarkDirty();
 
             bool wasForce = FogSettings.ForceForClients;
             FogSettings.ForceForClients = GUI.Toggle(
-                new Rect(18f, y + 26f, w - 36f, 24f),
-                FogSettings.ForceForClients,
-                "  Клиенты не могут отключить туман",
-                toggleStyle);
-            if (wasForce != FogSettings.ForceForClients)
-                FogSettings.MarkDirty();
+                new Rect(18f, y + 26f, w - 36f, 24f), FogSettings.ForceForClients,
+                "  Клиенты не могут отключить туман", toggleStyle);
+            if (wasForce != FogSettings.ForceForClients) FogSettings.MarkDirty();
+            y += 58f;
         }
         else
         {
@@ -1658,41 +1908,70 @@ public class FogMenuBehaviour : MonoBehaviour
             GUI.Label(new Rect(18f, y + 16f, w - 36f, 20f),
                 FogSettings.Synced ? "синхронизация: получена" : "синхронизация: нет",
                 FogSettings.Synced ? okStyle : hintStyle);
+            y += 44f;
         }
 
-        y += host ? 68f : 40f;
         GUI.enabled = host && FogSettings.Enabled;
 
-        // --- пресеты ---
         GUI.Label(new Rect(18f, y, w - 36f, 20f), "ПРЕСЕТЫ", sectionStyle);
         y += 22f;
 
-        {
-            float bw = (w - 36f - 12f) / 4f;
-            if (GUI.Button(new Rect(18f, y, bw, 26f), "Лёгкий", buttonStyle))
-                FogSettings.ApplyPreset(0);
-            if (GUI.Button(new Rect(18f + bw + 4f, y, bw, 26f), "Средний", buttonStyle))
-                FogSettings.ApplyPreset(1);
-            if (GUI.Button(new Rect(18f + (bw + 4f) * 2f, y, bw, 26f), "Плотный", buttonStyle))
-                FogSettings.ApplyPreset(2);
-            if (GUI.Button(new Rect(18f + (bw + 4f) * 3f, y, bw, 26f), "Шторм", buttonStyle))
-                FogSettings.ApplyPreset(3);
-        }
+        float bw = (w - 36f - 12f) / 4f;
+        if (GUI.Button(new Rect(18f, y, bw, 26f), "Лёгкий", buttonStyle))
+            FogSettings.ApplyPreset(0);
+        if (GUI.Button(new Rect(18f + bw + 4f, y, bw, 26f), "Средний", buttonStyle))
+            FogSettings.ApplyPreset(1);
+        if (GUI.Button(new Rect(18f + (bw + 4f) * 2f, y, bw, 26f), "Плотный", buttonStyle))
+            FogSettings.ApplyPreset(2);
+        if (GUI.Button(new Rect(18f + (bw + 4f) * 3f, y, bw, 26f), "Шторм", buttonStyle))
+            FogSettings.ApplyPreset(3);
         y += 34f;
 
         y = DrawRow(y, w, "Сила тумана", ref FogSettings.Outdoor);
         y = DrawRangeRow(y, w, "Начало тумана, м", ref FogSettings.DistanceStart, 2f, 60f);
         y = DrawRangeRow(y, w, "Конец тумана, м", ref FogSettings.DistanceEnd, 20f, 200f);
 
-        // Раздел не экспериментальный: эффект доведён и проверен в игре.
+        y = DrawProtectionRow(y, w);
+
+        y = DrawRow(y, w, "Закрытый транспорт / Ark", ref FogSettings.ClosedVehicle);
+        y = DrawRow(y, w, "Велик / мотоцикл", ref FogSettings.OpenVehicle);
+
+        {
+            bool was = FogSettings.DistanceOn;
+            GUI.enabled = host && FogSettings.Enabled;
+            FogSettings.DistanceOn = DrawToggle(
+                new Rect(18f, y, w - 36f, 22f), FogSettings.DistanceOn,
+                "Туман по расстоянию (свой шейдер)");
+            if (was != FogSettings.DistanceOn) FogSettings.MarkDirty();
+        }
+        y += 28f;
+
+        {
+            bool was = FogSettings.UseShelter;
+            GUI.enabled = host && FogSettings.Enabled;
+            FogSettings.UseShelter = DrawToggle(
+                new Rect(18f, y, w - 36f, 22f), FogSettings.UseShelter,
+                "Считать укрытием место под крышей");
+            if (was != FogSettings.UseShelter) FogSettings.MarkDirty();
+        }
+        y += 30f;
+
+        GUI.enabled = true;
+        return y;
+    }
+
+    // --- вкладка «Атмосфера» ---
+    private float DrawTabAtmo(float y, float w, bool host)
+    {
+        GUI.enabled = host && FogSettings.Enabled;
+
         GUI.Label(new Rect(18f, y, w - 36f, 18f), "ДЫХАНИЕ ТУМАНА", sectionStyle);
         y += 20f;
 
         {
             bool was = FogSettings.LiveOn;
             FogSettings.LiveOn = DrawToggle(
-                new Rect(18f, y, w - 36f, 22f),
-                FogSettings.LiveOn,
+                new Rect(18f, y, w - 36f, 22f), FogSettings.LiveOn,
                 "Живость тумана (дыхание)");
             if (was != FogSettings.LiveOn) FogSettings.MarkDirty();
         }
@@ -1709,32 +1988,24 @@ public class FogMenuBehaviour : MonoBehaviour
             y += 16f;
         }
 
-        // --- динамика: мировые клочья ---
         GUI.Label(new Rect(18f, y, w - 36f, 18f), "ДИНАМИКА ТУМАНА", sectionStyle);
         y += 20f;
 
         {
-            bool wasEnabled = GUI.enabled;
-            GUI.enabled = host && FogSettings.Enabled;
-
             bool was = FogSettings.DynamicOn;
+            GUI.enabled = host && FogSettings.Enabled;
             FogSettings.DynamicOn = DrawToggle(
-                new Rect(18f, y, w - 36f, 22f),
-                FogSettings.DynamicOn,
+                new Rect(18f, y, w - 36f, 22f), FogSettings.DynamicOn,
                 "Клочья тумана в мире (ветер)");
             if (was != FogSettings.DynamicOn) FogSettings.MarkDirty();
-
-            GUI.enabled = wasEnabled;
         }
         y += 28f;
 
         {
             bool wasEnabled = GUI.enabled;
             GUI.enabled = host && FogSettings.Enabled && FogSettings.DynamicOn;
-
             y = DrawRow(y, w, "Амплитуда клочьев", ref FogSettings.DynamicAmount);
             y = DrawRow(y, w, "Скорость ветра", ref FogSettings.DynamicSpeed);
-
             GUI.enabled = wasEnabled;
 
             GUI.Label(new Rect(18f, y - 6f, w - 36f, 32f),
@@ -1743,14 +2014,13 @@ public class FogMenuBehaviour : MonoBehaviour
             y += 30f;
         }
 
+        GUI.enabled = host && FogSettings.Enabled;
         y = DrawRow(y, w, "Оттенок биома", ref FogSettings.BiomeTint);
 
-        // Ночь орды: туман краснеет и наезжает заранее, ещё до 22:00.
         {
             bool was = FogSettings.HordeFogOn;
             FogSettings.HordeFogOn = DrawToggle(
-                new Rect(18f, y, w - 36f, 22f),
-                FogSettings.HordeFogOn,
+                new Rect(18f, y, w - 36f, 22f), FogSettings.HordeFogOn,
                 "Туман в ночь орды (красный, плотнее)");
             if (was != FogSettings.HordeFogOn) FogSettings.MarkDirty();
         }
@@ -1762,66 +2032,6 @@ public class FogMenuBehaviour : MonoBehaviour
             y = DrawRow(y, w, "Сила тумана орды", ref FogSettings.HordeFog);
             GUI.enabled = wasEnabled;
         }
-        y = DrawProtectionRow(y, w);
-
-        y = DrawRow(y, w, "Закрытый транспорт / Ark", ref FogSettings.ClosedVehicle);
-        y = DrawRow(y, w, "Велик / мотоцикл", ref FogSettings.OpenVehicle);
-
-        y += 2f;
-        GUI.Label(
-            new Rect(18f, y, w - 36f, 20f),
-            string.Format("Сейчас: {0} · сила {1}% · укрытие {2}%",
-                FogDensityLogic.CurrentMode ?? "—",
-                Mathf.RoundToInt(Mathf.Clamp01(DistanceFog.ActiveStrength) * 100f),
-                Mathf.RoundToInt(FogDensityLogic.ShelterPercent)),
-            hintStyle
-        );
-        y += 18f;
-
-        GUI.Label(
-            new Rect(18f, y, w - 36f, 50f),
-            string.Format("дыхание {0}% · орда {1}%\nклочья {2}% · ветер {3:0.0} м/с\nтуман {4:0}–{5:0} м · центр {6:0.0} м",
-                Mathf.RoundToInt(Mathf.Clamp01(DistanceFog.LiveFactor) * 100f),
-                Mathf.RoundToInt(Mathf.Clamp01(DistanceFog.HordeAmount) * 100f),
-                Mathf.RoundToInt(DistanceFog.DynamicLive * 100f),
-                DistanceFog.WindSpeed,
-                DistanceFog.ActiveStart,
-                DistanceFog.ActiveEnd,
-                DistanceFog.CenterOffset),
-            hintStyle
-        );
-        y += 50f;
-
-        GUI.Label(new Rect(18f, y, w - 36f, 20f),
-            "Шейдер: " + DistanceFog.Status + " · частицы: " + DistanceFog.ParticleStatus, hintStyle);
-        y += 22f;
-
-        {
-            bool was = FogSettings.DistanceOn;
-            GUI.enabled = host && FogSettings.Enabled;
-            FogSettings.DistanceOn = DrawToggle(
-                new Rect(18f, y, w - 36f, 22f),
-                FogSettings.DistanceOn,
-                "Туман по расстоянию (свой шейдер)");
-            GUI.enabled = true;
-            if (was != FogSettings.DistanceOn) FogSettings.MarkDirty();
-        }
-        y += 28f;
-
-        {
-            bool was = FogSettings.UseShelter;
-            GUI.enabled = host;
-            FogSettings.UseShelter = DrawToggle(
-                new Rect(18f, y, w - 36f, 22f),
-                FogSettings.UseShelter,
-                "Считать укрытием место под крышей");
-            GUI.enabled = true;
-            if (was != FogSettings.UseShelter) FogSettings.MarkDirty();
-        }
-        y += 28f;
-
-        GUI.enabled = true;
-        y += 2f;
 
         // --- пепельная буря ---
         GUI.DrawTexture(new Rect(18f, y, w - 36f, 1f), rowTex, ScaleMode.StretchToFill);
@@ -1833,11 +2043,8 @@ public class FogMenuBehaviour : MonoBehaviour
         {
             bool was = FogSettings.StormEnabled;
             FogSettings.StormEnabled = GUI.Toggle(
-                new Rect(18f, y, w - 36f, 24f),
-                FogSettings.StormEnabled,
-                "  Буря включена",
-                toggleStyle
-            );
+                new Rect(18f, y, w - 36f, 24f), FogSettings.StormEnabled,
+                "  Буря включена", toggleStyle);
             if (was != FogSettings.StormEnabled) FogSettings.MarkDirty();
         }
         y += 28f;
@@ -1853,23 +2060,19 @@ public class FogMenuBehaviour : MonoBehaviour
                 biome,
                 Mathf.RoundToInt(AshStorm.EffectiveStrength * 100f),
                 AshStorm.StateText),
-            hintStyle
-        );
+            hintStyle);
 
         if (GUI.Button(new Rect(w - 196f, y - 10f, 178f, 26f), "Показать бурю", buttonStyle))
         {
             AshStorm.ForceDemo(45f);
         }
-
-        y += 22f;
+        y += 24f;
 
         // --- ночь и DifRUST ---
         GUI.DrawTexture(new Rect(18f, y, w - 36f, 1f), rowTex, ScaleMode.StretchToFill);
         y += 10f;
 
-        bool difrust = ModCompat.DifRUSTInstalled;
-
-        if (difrust)
+        if (ModCompat.DifRUSTInstalled)
         {
             GUI.Label(new Rect(18f, y, w - 36f, 20f), "НОЧЬ · DIFRUST ОБНАРУЖЕН", sectionStyle);
             y += 24f;
@@ -1891,6 +2094,61 @@ public class FogMenuBehaviour : MonoBehaviour
             y += 30f;
         }
 
+        GUI.enabled = true;
+        return y;
+    }
+
+    // --- вкладка «Диагностика» ---
+    private float DrawTabDiag(float y, float w, bool host)
+    {
+        GUI.Label(new Rect(18f, y, w - 36f, 20f), "СЕЙЧАС", sectionStyle);
+        y += 22f;
+
+        GUI.Label(
+            new Rect(18f, y, w - 36f, 20f),
+            string.Format("{0} · сила {1}% · укрытие {2}%",
+                FogDensityLogic.CurrentMode ?? "—",
+                Mathf.RoundToInt(Mathf.Clamp01(DistanceFog.ActiveStrength) * 100f),
+                Mathf.RoundToInt(FogDensityLogic.ShelterPercent)),
+            hintStyle);
+        y += 18f;
+
+        int hordeDay = HordeNight.HordeDay(
+            GameManager.Instance != null ? GameManager.Instance.World : null);
+        string hordeDayText = hordeDay > 0 ? hordeDay.ToString() : "?";
+
+        GUI.Label(
+            new Rect(18f, y, w - 36f, 54f),
+            string.Format("дыхание {0}% · орда {1}% · день орды {7}\nклочья {2}% · ветер {3:0.0} м/с\nтуман {4:0}–{5:0} м · центр {6:0.0} м",
+                Mathf.RoundToInt(Mathf.Clamp01(DistanceFog.LiveFactor) * 100f),
+                Mathf.RoundToInt(Mathf.Clamp01(DistanceFog.HordeAmount) * 100f),
+                Mathf.RoundToInt(DistanceFog.DynamicLive * 100f),
+                DistanceFog.WindSpeed,
+                DistanceFog.ActiveStart,
+                DistanceFog.ActiveEnd,
+                DistanceFog.CenterOffset,
+                hordeDayText),
+            hintStyle);
+        y += 56f;
+
+        GUI.Label(new Rect(18f, y, w - 36f, 20f),
+            "Шейдер: " + DistanceFog.Status + " · бандл " + DistanceFog.BundleTag
+            + " · частицы: " + DistanceFog.ParticleStatus, hintStyle);
+        y += 18f;
+
+        GUI.Label(new Rect(18f, y, w - 36f, 20f),
+            string.Format("зоны: статика {0} · база {1} · слоты {2}",
+                FogObstacles.StaticCount, FogObstacles.BaseCount, FogObstacles.Count),
+            hintStyle);
+        y += 20f;
+
+        GUI.Label(new Rect(18f, y, w - 36f, 20f),
+            string.Format("цвет: сырой #{0} · итог #{1}",
+                ColorUtility.ToHtmlStringRGB(DistanceFog.RawFogColor),
+                ColorUtility.ToHtmlStringRGB(DistanceFog.FinalFogColor)),
+            hintStyle);
+        y += 26f;
+
         if (host)
         {
             bool wasDebug = FogSettings.DebugMode > 0;
@@ -1900,33 +2158,17 @@ public class FogMenuBehaviour : MonoBehaviour
                 "Отладка: зенит (2)");
             if (debugNow != wasDebug)
                 FogSettings.DebugMode = debugNow ? 2 : 0;
-            y += 28f;
+            y += 30f;
         }
 
-        if (GUI.Button(new Rect(18f, y, 150f, 30f), "Сбросить", buttonStyle) && host)
-        {
-            FogSettings.ResetToDefaults();
-        }
-        bool closeRequested = false;
-        if (GUI.Button(new Rect(178f, y, w - 196f, 30f), "Закрыть", buttonStyle))
-        {
-            Close();
-            closeRequested = true;
-        }
-
-        y += 38f;
-        GUI.Label(
-            new Rect(18f, y, w - 36f, 40f),
+        GUI.Label(new Rect(18f, y, w - 36f, 40f),
             host
                 ? "NumPad5 / F7 — открыть меню. Изменения сразу применяются всем игрокам."
                 : "NumPad5 / F7 — открыть меню. Менять силу тумана может только хост.",
-            hintStyle
-        );
+            hintStyle);
+        y += 44f;
 
-        GUI.EndScrollView();
-        if (closeRequested) return;
-
-        GUI.DragWindow(new Rect(0f, 0f, w, ScrollBodyTop - 12f));
+        return y;
     }
 
     // Защита помещения: 100% — тумана в доме нет, 0% — как на улице.

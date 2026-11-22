@@ -1,6 +1,6 @@
 # Silent Fog — Client (source)
 
-Client-side Harmony mod for 7 Days to Die 3.4.x. Version **1.15.0**.
+Client-side Harmony mod for 7 Days to Die 3.4.x. Version **1.20.0**.
 
 ## What it does
 
@@ -105,7 +105,8 @@ Settings are stored in `SilentFog.cfg` next to the game saves.
 
 ## Menu
 
-`NumPad5` or `F7`. Current rows:
+`NumPad5` or `F7`. Three tabs — «Основное», «Атмосфера», «Диагностика»; the
+rows below follow that order:
 
 - preset buttons — «Лёгкий», «Средний», «Плотный», «Шторм»;
 - «Сила тумана» — overall fog strength;
@@ -213,7 +214,7 @@ without it; only the host lock and the forced sync require the server part.
 
 ## Version
 
-`1.15.0` — see `CHANGELOG.md` for the full history.
+`1.20.0` — see `CHANGELOG.md` for the full history.
 
 ## License
 

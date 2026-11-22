@@ -18,6 +18,21 @@ internal static class BiomeFog
     private static Color current = Color.white;
     private static bool started;
 
+    // Кэш имени биома в нижнем регистре: ToLowerInvariant каждый кадр
+    // давал по две аллокации строки.
+    private static string lastName;
+    private static string lastLower;
+
+    private static string Lower(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return null;
+        if (raw == lastName) return lastLower;
+
+        lastName = raw;
+        lastLower = raw.ToLowerInvariant();
+        return lastLower;
+    }
+
     public static Color Apply(Color vanilla, EntityPlayerLocal player)
     {
         float strength = Mathf.Clamp01(FogSettings.BiomeTint);
@@ -108,9 +123,10 @@ internal static class BiomeFog
         {
         }
 
+        name = Lower(name);
         if (string.IsNullOrEmpty(name)) return false;
 
-        switch (name.ToLowerInvariant())
+        switch (name)
         {
             case "snow": color = Snow; return true;
             case "desert": color = Desert; return true;
@@ -145,7 +161,7 @@ internal static class BiomeFog
         string name = GetBiomeName(player);
         if (string.IsNullOrEmpty(name)) return;
 
-        switch (name.ToLowerInvariant())
+        switch (name)
         {
             case "snow":
                 color = new Color(0.95f, 0.97f, 1.00f, 1f);
@@ -206,8 +222,7 @@ internal static class BiomeFog
         {
             if (player != null && player.biomeStandingOn != null)
             {
-                string name = player.biomeStandingOn.m_sBiomeName;
-                return string.IsNullOrEmpty(name) ? null : name.ToLowerInvariant();
+                return Lower(player.biomeStandingOn.m_sBiomeName);
             }
         }
         catch

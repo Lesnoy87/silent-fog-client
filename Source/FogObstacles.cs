@@ -20,8 +20,16 @@ internal static class FogObstacles
     public static float InsideWeight;
     public static int InsideKind = -1;
 
+    // Для диагностики в меню: сколько зон нашлось на этом кадре.
+    public static int StaticCount { get { return statics.Count + bigPoi.Count; } }
+    public static int BaseCount { get { return baseCount; } }
+
     // Полуширина мягкой кромки, м. Полная кромка = 2 * edge.
-    private static readonly float[] KindEdge = { 3.0f, 2.5f, 2.0f, 2.0f };
+    // 1.16.0: 6/5/4/5 (полная 8–12 м) — слишком большой «чистый карман»
+    // вокруг POI и баз, в тумане читался вырезанный прямоугольник.
+    // 1.16.1: 4/3.5/3/3.5 — компромисс: внутри чисто по стенам,
+    // снаружи переход 6–8 м, вырез вдвое меньше.
+    private static readonly float[] KindEdge = { 4.0f, 3.5f, 3.0f, 3.5f };
     // Приоритет при борьбе за слот: торговец важнее дома.
     private static readonly float[] KindPrio = { 12f, 0f, 20f, 20f };
 
@@ -52,6 +60,8 @@ internal static class FogObstacles
         public float target;
         public float score;
         public bool evict;
+        // Насколько низ бокса опущен вниз из-за подвала (<= 0).
+        public float dip;
     }
 
     private static readonly Slot[] slots = new Slot[Max];
@@ -62,6 +72,8 @@ internal static class FogObstacles
 
     private static int staticKey = -1;
     private static int baseKey = -1;
+    private static int baseCount;
+    private static bool claimErrorLogged;
     private static float nextScan;
     private static int lastFrame = -1;
     private static float inW;
@@ -77,6 +89,7 @@ internal static class FogObstacles
     }
 
     private static readonly List<BaseCand> baseCands = new List<BaseCand>(BaseCandCap);
+    private static readonly List<Zone> foundZones = new List<Zone>(BaseCandCap);
     private static readonly HashSet<Vector3i> claimSeen = new HashSet<Vector3i>();
     private static readonly Comparison<BaseCand> baseCmp =
         (a, b) => a.d2.CompareTo(b.d2);
@@ -131,6 +144,7 @@ internal static class FogObstacles
             s.target = 0f;
             s.score = 0f;
             s.evict = false;
+            s.dip = 0f;
             BoxMin[i] = Vector4.zero;
             BoxMax[i] = Vector4.zero;
         }
@@ -141,6 +155,8 @@ internal static class FogObstacles
         cands.Clear();
         staticKey = -1;
         baseKey = -1;
+        baseCount = 0;
+        claimErrorLogged = false;
         nextScan = 0f;
         lastFrame = -1;
         inW = 0f;
@@ -233,19 +249,30 @@ internal static class FogObstacles
                 else
                 {
                     // Все слоты заняты: вытесняем худший, только если новый
-                    // заметно лучше (15 м запаса).
-                    Slot worst = null;
+                    // заметно лучше (15 м запаса). Если один слот уже
+                    // затухает — второй не выбиваем, иначе один новый POI
+                    // гасит сразу несколько боксов.
+                    bool evicting = false;
                     for (int k = 0; k < Max; k++)
                     {
-                        Slot s = slots[k];
-                        if (!s.evict && (worst == null || s.score > worst.score))
-                            worst = s;
+                        if (slots[k].evict) { evicting = true; break; }
                     }
 
-                    if (worst != null && c.score + 15f < worst.score)
+                    if (!evicting)
                     {
-                        worst.evict = true;
-                        worst.target = 0f;
+                        Slot worst = null;
+                        for (int k = 0; k < Max; k++)
+                        {
+                            Slot s = slots[k];
+                            if (!s.evict && (worst == null || s.score > worst.score))
+                                worst = s;
+                        }
+
+                        if (worst != null && c.score + 15f < worst.score)
+                        {
+                            worst.evict = true;
+                            worst.target = 0f;
+                        }
                     }
                 }
             }
@@ -285,7 +312,24 @@ internal static class FogObstacles
                 : 0.5f;
             s.weight = Mathf.MoveTowards(s.weight, s.target, dt * speed);
 
-            s.min = Vector3.MoveTowards(s.min, s.goalMin, 3f * dt);
+            // Подвал: если камера ушла ниже низа бокса, но осталась внутри
+            // по XZ, тянем низ вниз. Иначе в подвале туман «висит» над
+            // головой, потому что бокс claim'а кончается на 4 м ниже блока.
+            // Только база: у POI подвал уже входит в bounding box префаба,
+            // а «нырять» под чужое здание незачем.
+            float want = 0f;
+            if (s.kind == KBase && s.target > 0.05f && s.goalMin.y > cam.y - 3f
+                && cam.x > s.goalMin.x - 1f && cam.x < s.goalMax.x + 1f
+                && cam.z > s.goalMin.z - 1f && cam.z < s.goalMax.z + 1f)
+            {
+                want = cam.y - 3f - s.goalMin.y;      // <= 0
+            }
+            s.dip = Mathf.MoveTowards(s.dip, want, 24f * dt);
+
+            Vector3 goalMin = s.goalMin;
+            goalMin.y += s.dip;
+
+            s.min = Vector3.MoveTowards(s.min, goalMin, 6f * dt);
             s.max = Vector3.MoveTowards(s.max, s.goalMax, 3f * dt);
 
             if (s.target <= 0f && s.weight < 0.003f)
@@ -293,12 +337,25 @@ internal static class FogObstacles
                 s.id = -1;
                 s.evict = false;
                 s.weight = 0f;
+                s.dip = 0f;
                 continue;
             }
 
             float w = S(s.weight);
-            BoxMin[n] = new Vector4(s.min.x, s.min.y, s.min.z, w);
-            BoxMax[n] = new Vector4(s.max.x, s.max.y, s.max.z, KindEdge[s.kind]);
+            float edge = EdgeFor(s);
+
+            // Бокс отдаём уже расширенным на edge, а ту же edge передаём
+            // в шейдер. SoftChord усредняет внешний и внутренний боксы,
+            // поэтому внутренний остаётся ровно по стенам (без сжатия),
+            // а мягкий переход уходит наружу. Иначе широкая кромка съедала
+            // интерьер: чистая зона уезжала внутрь стен.
+            // По вертикали расширяем только на edge/2: в шейдере вертикаль
+            // уже масштабируется на 0.5, иначе над крышей висит плоскость.
+            float edgeY = edge * 0.5f;
+            BoxMin[n] = new Vector4(
+                s.min.x - edge, s.min.y - edgeY, s.min.z - edge, w);
+            BoxMax[n] = new Vector4(
+                s.max.x + edge, s.max.y + edgeY, s.max.z + edge, edge);
             n++;
 
             float sd = BoxSdf(cam, s.min, s.max);
@@ -394,7 +451,11 @@ internal static class FogObstacles
     private static void UpdateBaseZones(EntityPlayerLocal player)
     {
         int key = 0;
-        List<Zone> found = new List<Zone>(BaseCandCap);
+        baseCount = 0;
+        foundZones.Clear();
+
+        bool haveBedroll = false;
+        Vector3i bedroll = Vector3i.zero;
 
         try
         {
@@ -428,11 +489,11 @@ internal static class FogObstacles
                     }
                 }
 
+                // Сначала только ключ: зоны создаём ниже и только если он
+                // изменился. Раньше Zone аллоцировались каждые 0.2 с зря.
                 if (baseCands.Count > 0)
                 {
                     baseCands.Sort(baseCmp);   // ближайшие первыми
-                    int half = Mathf.Max(8,
-                        GameStats.GetInt(EnumGameStats.LandClaimSize) / 2);
                     int n = baseCands.Count;
 
                     unchecked
@@ -442,43 +503,65 @@ internal static class FogObstacles
                             Vector3i c = baseCands[i].pos;
                             // Сумма хешей не зависит от порядка → стабильный ключ.
                             key += HashV(c.x, c.y, c.z);
-
-                            Vector3 mn = new Vector3(
-                                c.x - half - BasePad, c.y - 4f,
-                                c.z - half - BasePad);
-                            Vector3 mx = new Vector3(
-                                c.x + half + BasePad, c.y + 16f,
-                                c.z + half + BasePad);
-                            found.Add(MakeZone(KBase, mn, mx));
                         }
                         key = key * 31 + n;
                     }
+                    baseCount = n;
                 }
                 else if (me != null && me.HasBedrollPos)
                 {
                     // Bedroll — только если claim'ов нет вообще.
-                    Vector3i b = me.BedrollPos;
-                    unchecked { key = HashV(b.x, b.y, b.z) + 0x2545F491; }
-
-                    Vector3 mn = new Vector3(
-                        b.x - 6f, b.y - 3f, b.z - 6f);
-                    Vector3 mx = new Vector3(
-                        b.x + 6f, b.y + 8f, b.z + 6f);
-                    found.Add(MakeZone(KBase, mn, mx));
+                    bedroll = me.BedrollPos;
+                    haveBedroll = true;
+                    baseCount = 1;
+                    unchecked { key = HashV(bedroll.x, bedroll.y, bedroll.z) + 0x2545F491; }
                 }
             }
         }
-        catch
+        catch (Exception e)
         {
-            // API земли может отличаться в другой версии игры — без базы.
+            // API земли может отличаться в другой версии игры — без базы,
+            // но причину больше не глотаем молча.
+            if (!claimErrorLogged)
+            {
+                claimErrorLogged = true;
+                Debug.LogWarning("[SilentFog] claim scan failed: " + e.Message);
+            }
         }
 
         if (key == -1) key = -2;      // -1 зарезервирован как «ещё не считали»
         if (key == baseKey) return;
         baseKey = key;
 
+        if (haveBedroll)
+        {
+            Vector3 mn = new Vector3(
+                bedroll.x - 6f, bedroll.y - 3f, bedroll.z - 6f);
+            Vector3 mx = new Vector3(
+                bedroll.x + 6f, bedroll.y + 8f, bedroll.z + 6f);
+            foundZones.Add(MakeZone(KBase, mn, mx));
+        }
+        else if (baseCands.Count > 0)
+        {
+            int half = Mathf.Max(8,
+                GameStats.GetInt(EnumGameStats.LandClaimSize) / 2);
+            int n = baseCands.Count;
+
+            for (int i = 0; i < n; i++)
+            {
+                Vector3i c = baseCands[i].pos;
+                Vector3 mn = new Vector3(
+                    c.x - half - BasePad, c.y - 4f,
+                    c.z - half - BasePad);
+                Vector3 mx = new Vector3(
+                    c.x + half + BasePad, c.y + 16f,
+                    c.z + half + BasePad);
+                foundZones.Add(MakeZone(KBase, mn, mx));
+            }
+        }
+
         dyn.RemoveAll(z => z.kind == KBase);
-        dyn.AddRange(found);
+        dyn.AddRange(foundZones);
     }
 
     // --- Большие POI: статичный якорь вокруг игрока ---
@@ -525,6 +608,15 @@ internal static class FogObstacles
     }
 
     // --- Геометрия ---
+
+    // Кромка не может быть шире половины меньшей стороны бокса: у маленькой
+    // кибидки широкая кромка съела бы весь интерьер. 0.5 * half → у бокса
+    // 20x20 м полная кромка 10 м, у 10x10 м — 5 м, у claim'а 40x40 — 10–12 м.
+    private static float EdgeFor(Slot s)
+    {
+        float half = Mathf.Min(s.max.x - s.min.x, s.max.z - s.min.z) * 0.5f;
+        return Mathf.Min(KindEdge[s.kind], Mathf.Max(2.5f, half * 0.5f));
+    }
 
     private static Zone MakeZone(int kind, Vector3 mn, Vector3 mx)
     {
