@@ -31,8 +31,27 @@ public class SilentFogImageEffect : MonoBehaviour
     public Vector4[] boxMax = new Vector4[6];
     public int boxCount;
     public Vector4 edgeParams = new Vector4(1.5f, 0.5f, 0.27f, 0.12f);
+
+    // След чистых точек в мире: xy = XZ центра тумана, z не используется,
+    // w = вес (амплитуда маски) 0..1. Радиус общий, см. trailP.
+    // Длина обязана совпадать с TRAIL_POINTS в шейдере (20), иначе Unity
+    // может не обновить uniform и оставить в буфере мусор (авария 21/20).
+    public Vector4[] trail = new Vector4[DistanceFog.TrailMax];
+    public int trailCount;
     public bool debug;
     public int debugMode;
+
+    // Вид у земли и у горизонта (0..1). Управляется из FogSettings.
+    public float groundBlend = 1f;
+    public Vector4 skyBand = new Vector4(0f, 0.2087f, 0f, 0f);
+
+    // След: x = rIn, y = rOut (м), z = амплитуда волны краёв (м).
+    // rOut <= 0 — след выключен.
+    public Vector4 trailP;
+
+    // Слоистость тумана: 0 — ровная стена, 1 — низкий слоистый туман.
+    public float layers;
+    private static bool trailLenWarned;
 
     // Смещение render-space -> game-space для камеры (floating origin).
     // Считается как player.position - player.transform.position.
@@ -79,6 +98,24 @@ public class SilentFogImageEffect : MonoBehaviour
         material.SetVector("_Wind", new Vector4(wind.x, wind.y, 0f, 0f));
 
         material.SetVector("_FogCenter", new Vector4(center.x, center.y, 0f, 0f));
+
+        // Страховка от рассинхрона с TRAIL_POINTS: массив должен быть ровно
+        // 20, иначе SetVectorArray может оставить старые значения uniform.
+        if (trail == null || trail.Length != DistanceFog.TrailMax)
+        {
+            if (!trailLenWarned)
+            {
+                trailLenWarned = true;
+                Debug.LogWarning("[SilentFog] trail length "
+                    + (trail == null ? 0 : trail.Length) + " != "
+                    + DistanceFog.TrailMax + ", пересоздаю массив");
+            }
+            trail = new Vector4[DistanceFog.TrailMax];
+        }
+
+        material.SetVectorArray("_Trail", trail);
+        material.SetFloat("_TrailCount", trailCount);
+        material.SetVector("_TrailP", trailP);
         material.SetFloat("_BaseY", baseY);
         material.SetFloat("_NoiseSink", noiseSink);
         material.SetVectorArray("_FogBoxMin", boxMin);
@@ -86,6 +123,9 @@ public class SilentFogImageEffect : MonoBehaviour
         material.SetFloat("_FogBoxCount", boxCount);
         material.SetVector("_FogEdge", edgeParams);
         material.SetFloat("_FogDebug", debugMode);
+        material.SetFloat("_GroundBlend", Mathf.Clamp01(groundBlend));
+        material.SetVector("_SkyBand", skyBand);
+        material.SetFloat("_Layers", Mathf.Clamp01(layers));
 
         Graphics.Blit(source, destination, material);
 
@@ -111,7 +151,7 @@ internal static class DistanceFog
     private const string ParticleShaderName = "Hidden/SilentFog/Particle";
 
     // Версия бандла — для меню: видно, какой шейдер реально загружен.
-    public const string BundleTag = "1.20.0";
+    public const string BundleTag = "1.35.2";
 
     private const int MaxParticles = 900;
 
@@ -150,6 +190,41 @@ internal static class DistanceFog
     private static float smoothSpan = -1f;
     private static float smoothStrength = -1f;
     private static EntityPlayerLocal localPlayer;
+
+    // --- След тумана (breadcrumb trail) ---
+    internal const int TrailMax = 20;
+
+    // Диагностика для меню: сколько точек, скорость, радиус хвоста и
+    // сколько раз в секунду обновляются uniform-ы (должно быть ~FPS).
+    public static int TrailCountNow { get { return trailCount; } }
+    public static float TrailSpeedNow { get { return speed01; } }
+    public static float TrailRadiusNow { get { return trailRadiusOut; } }
+    public static int ApplyPerSecond { get; private set; }
+    private static int applyCount;
+    private static float applyWindow;
+
+    // След — маска плотности (F *= 1 - M), а не вычитание из поля:
+    // обзор вперёд не растёт, коридор ограничен трубкой rOut (см. ревью).
+    // Шаг 0.2 с при 5 м/с даёт сегмент 1 м; буфер 19 * 0.2 = 3.8 с больше
+    // TrailLife, поэтому точка гаснет ДО вытеснения и хвост не прыгает.
+    private const float TrailInterval = 0.2f;  // секунд между точками
+    private const float TrailLife = 3.5f;      // длина = скорость * 3.5 с
+    private const float TrailMinMove = 0.5f;   // не плодим точки на месте
+    private const float TrailWobbleAmp = 1.4f; // волна краёв коридора, м
+    // M_max: коридор не вычищается в ноль (лёгкая дымка внутри).
+    private const float TrailMaskMax = 0.82f;
+    // rIn — мягкая кромка маски, м.
+    private const float TrailRIn = 1.5f;
+    private static readonly Vector4[] trail = new Vector4[TrailMax];
+    private static readonly Vector4[] trailGpu = new Vector4[TrailMax];
+    private static float trailRadiusOut;
+    private static int trailCount;
+    private static Vector2 trailLast;
+    private static Vector2 trailPrev;
+    private static bool trailInit;
+    private static float trailTimer;
+    private static float speed01;
+    private static float wInSmooth = -1f;
 
     // --- Частицы ---
     private static readonly FogParticle[] parts = new FogParticle[MaxParticles];
@@ -253,6 +328,10 @@ internal static class DistanceFog
             centerInit = false;
             playerPosInit = false;
             playerSpeed = 0f;
+            trailInit = false;
+            trailCount = 0;
+            trailTimer = 0f;
+            wInSmooth = -1f;
             smoothStart = -1f;
             smoothSpan = -1f;
             smoothStrength = -1f;
@@ -274,6 +353,88 @@ internal static class DistanceFog
         CamGame = cam.transform.position + effect.worldOffset;
 
         if (ParticlesEnabled) EnsureBuffer(cam);
+    }
+
+    // След чистых точек: где прошёл — там ещё несколько секунд чисто, потом
+    // затягивается туманом. Точки живут в мировых координатах и не вращаются.
+    // Пишем путь ЦЕНТРА тумана (centerEff), а не игрока: тогда «шапка» головы
+    // лежит внутри чистого круга и обзор вперёд не растёт.
+    // Включается из настроек (FogSettings.TrailOn), по умолчанию — да.
+    public static bool TrailEnabled;
+
+    private static bool IsBadVec(Vector2 v)
+    {
+        return float.IsNaN(v.x) || float.IsNaN(v.y)
+            || float.IsInfinity(v.x) || float.IsInfinity(v.y);
+    }
+
+    private static void UpdateTrail(Vector2 c)
+    {
+        if (!TrailEnabled || IsBadVec(c))
+        {
+            trailInit = false;
+            trailCount = 0;
+            return;
+        }
+
+        float dt = Mathf.Max(Time.deltaTime, 0.0001f);
+        float drop = dt / TrailLife;
+
+        for (int i = 0; i < trailCount; i++)
+        {
+            Vector4 p = trail[i];
+            p.w = Mathf.Max(0f, p.w - drop);
+            trail[i] = p;
+        }
+
+        while (trailCount > 0 && trail[trailCount - 1].w <= 0.02f)
+            trailCount--;
+
+        if (localPlayer == null)
+        {
+            trailInit = false;
+            trailCount = 0;
+            return;
+        }
+
+        Vector2 p2 = c;
+
+        // Первый кадр или телепорт: рвём след, иначе коридор протянется
+        // через полкарты.
+        if (!trailInit || (p2 - trailLast).sqrMagnitude > 30f * 30f)
+        {
+            trailInit = true;
+            trailLast = p2;
+            trailPrev = p2;
+            trailTimer = 0f;
+            speed01 = 0f;
+            trailCount = 0;
+            PushTrail(p2);
+            return;
+        }
+
+        // Скорость для диагностики: длина следа = скорость * TrailLife.
+        float inst = (p2 - trailPrev).magnitude / dt;
+        trailPrev = p2;
+        if (inst > 80f) inst = 0f;
+        speed01 = Mathf.Lerp(speed01, Mathf.Clamp01(inst / 8f), Mathf.Clamp01(dt * 4f));
+
+        trailTimer += dt;
+        if (trailTimer >= TrailInterval
+            && (p2 - trailLast).sqrMagnitude >= TrailMinMove * TrailMinMove)
+        {
+            trailTimer = 0f;
+            trailLast = p2;
+            PushTrail(p2);
+        }
+    }
+
+    private static void PushTrail(Vector2 pos)
+    {
+        if (trailCount < TrailMax) trailCount++;
+        for (int i = trailCount - 1; i > 0; i--)
+            trail[i] = trail[i - 1];
+        trail[0] = new Vector4(pos.x, pos.y, 0f, 1f);
     }
 
     private static void EnsureBuffer(Camera cam)
@@ -315,6 +476,15 @@ internal static class DistanceFog
         if (Time.frameCount == applyFrame) return;
         applyFrame = Time.frameCount;
 
+        // Сколько раз в секунду реально обновляются uniform-ы тумана.
+        applyCount++;
+        if (Time.time - applyWindow >= 1f)
+        {
+            ApplyPerSecond = applyCount;
+            applyCount = 0;
+            applyWindow = Time.time;
+        }
+
         // --- мировой центр: отстаёт от игрока, пока тот не выйдет из триггера ---
         if (localPlayer != null)
         {
@@ -337,6 +507,7 @@ internal static class DistanceFog
                 playerSpeed = 0f;
                 playerPosInit = true;
             }
+
             lastPlayerPos = p;
 
             if (!centerInit || (p - center).sqrMagnitude > 80f * 80f)
@@ -348,6 +519,11 @@ internal static class DistanceFog
 
             if (FollowLag)
             {
+                // Триггер-зона 4 м: пока игрок внутри неё, туман стоит на
+                // месте — можно бегать внутри пузыря, кромка не едет.
+                // Вышел за 4 м — центр догоняет, целясь в точку на радиусе
+                // 4 м позади игрока. MoveTowards на скорости ≥24 м/с — это
+                // плавное скольжение (0.4 м за кадр при 60 fps), не прыжок.
                 float trigger = 4f;
                 float dist = Vector2.Distance(p, center);
                 if (dist > trigger)
@@ -368,7 +544,13 @@ internal static class DistanceFog
 
         // Насколько камера внутри чистого объёма: 0 — улица, 1 — дом/торговец.
         // Тот же вес сжимает пузырь игрока: внутри R=0, снаружи R=start.
-        float wIn = Mathf.Clamp01(FogObstacles.InsideWeight);
+        // Вес «внутри объёма» приходит рывками раз в 0.2 с — сглаживаем,
+        // иначе кромка впереди дёргается при входе/выходе из бокса.
+        float wInRaw = Mathf.Clamp01(FogObstacles.InsideWeight);
+        wInSmooth = wInSmooth < 0f
+            ? wInRaw
+            : Mathf.Lerp(wInSmooth, wInRaw, Mathf.Clamp01(Time.deltaTime * 2f));
+        float wIn = wInSmooth;
 
         // Внутри здания сила тумана снаружи должна быть уличной, а не
         // «домашней»: иначе окно почти чистое.
@@ -386,6 +568,10 @@ internal static class DistanceFog
             Vector2 camXZ = new Vector2(CamGame.x, CamGame.z);
             centerEff = Vector2.Lerp(center, camXZ, wIn);
         }
+
+        // След пишем по пути центра тумана, поэтому после centerEff.
+        TrailEnabled = FogSettings.TrailOn;
+        UpdateTrail(centerEff);
 
         // Сглаживаем span при смене режима (улица 33 м -> дом 2.5 м),
         // иначе fogEnd прыгает и на секунду появляется плотная оболочка.
@@ -453,7 +639,12 @@ internal static class DistanceFog
             densityScale = 1f + swing * liveAmount * 0.25f;
 
             float headroom = baseStrength > 0.01f ? 1f / baseStrength : 1.35f;
-            densityScale = Mathf.Clamp(densityScale, 0.4f, Mathf.Min(headroom, 1.35f));
+            // Пол силы: при 100 % дальняя стена должна быть непрозрачной,
+            // иначе видно край карты и границу догрузки. Чем выше заданная
+            // сила, тем меньше «дыхание» имеет права её ронять:
+            // 100 % -> пол 1.0, 50 % -> 0.66, 30 % -> 0.59.
+            float floor = Mathf.Lerp(0.55f, 1f, baseStrength * baseStrength);
+            densityScale = Mathf.Clamp(densityScale, floor, Mathf.Min(headroom, 1.35f));
         }
 
         LiveFactor = densityScale;
@@ -502,6 +693,40 @@ internal static class DistanceFog
         effect.dynamicAmount = smoothStrength > 0.001f ? dynamicOn * 0.30f : 0f;
         effect.wind = wind;
         effect.center = centerEff;
+
+        // След: точки в мировых координатах, гаснут по таймеру.
+        // Нулевая точка — «живая голова» ровно в центре тумана: иначе кромка
+        // стояла на последней записанной точке и прыгала при каждом пуше.
+        // Радиус — один на всех (uniform _TrailP), вес гасит амплитуду
+        // маски, а не радиус: fade(w) = smoothstep(0, 0.5, w).
+        int tn = 0;
+        if (TrailEnabled && localPlayer != null && !IsBadVec(centerEff))
+        {
+            trailGpu[tn++] = new Vector4(centerEff.x, centerEff.y, 0f, 1f);
+        }
+        for (int ti = 0; ti < trailCount && tn < trailGpu.Length; ti++)
+        {
+            Vector4 tp = trail[ti];
+            float ws = Mathf.Clamp01(tp.w / 0.5f);
+            ws = ws * ws * (3f - 2f * ws);
+            trailGpu[tn++] = new Vector4(tp.x, tp.y, 0f, ws);
+        }
+        // Хвост обнуляем: w = 0 означает «нет следа» даже если шейдер
+        // прочитает лишний сегмент.
+        for (int i = tn; i < trailGpu.Length; i++)
+            trailGpu[i] = Vector4.zero;
+
+        effect.trail = trailGpu;
+        effect.trailCount = tn;
+
+        // Радиус коридора = радиус чистого круга (fogStart, но не меньше 5.8):
+        // тогда на выходе из круга нет «шеи» и сужения, бока переходят
+        // в края коридора плавно. Впереди шапку режет полуплоскость в шейдере.
+        // Внутри дома fogStart → 0, поэтому след гаснет вместе с пузырём.
+        float rOut = (tn > 1 && effect.fogStart > 1f)
+            ? Mathf.Max(effect.fogStart, 5.8f) : 0f;
+        trailRadiusOut = rOut;
+        effect.trailP = new Vector4(TrailRIn, rOut, TrailWobbleAmp, TrailMaskMax);
         effect.worldOffset = localPlayer != null
             ? localPlayer.position - localPlayer.transform.position
             : Vector3.zero;
@@ -511,6 +736,10 @@ internal static class DistanceFog
         effect.boxMax = FogObstacles.BoxMax;
         effect.boxCount = FogObstacles.Count;
         effect.debugMode = FogSettings.DebugMode;
+        effect.groundBlend = Mathf.Clamp01(FogSettings.GroundBlend);
+        effect.skyBand = new Vector4(0f, 0.2087f,
+            Mathf.Clamp01(FogSettings.SkyBand), 0f);
+        effect.layers = Mathf.Clamp01(FogSettings.Layers);
         RawFogColor = SkyManager.GetFogColor();
         Color fogColor = BiomeFog.Milkify(
             BiomeFog.Apply(RawFogColor, localPlayer));

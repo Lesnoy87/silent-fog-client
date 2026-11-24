@@ -431,6 +431,19 @@ internal static class FogObstacles
                 Vector3i s = pi.boundingBoxSize;
                 if (s.x <= 0 || s.z <= 0) continue;
 
+                // Дороги в 7DTD — тоже prefab'ы, но вытянутые и низкие.
+                // Их бокс вырезал туман вдоль полосы («взлётная полоса»).
+                string pname = pi.prefab != null ? pi.prefab.PrefabName : null;
+                if (string.IsNullOrEmpty(pname)) pname = pi.name;
+                if (!string.IsNullOrEmpty(pname)
+                    && pname.IndexOf("road", StringComparison.OrdinalIgnoreCase) >= 0)
+                    continue;
+
+                int longer = Mathf.Max(s.x, s.z);
+                int shorter = Mathf.Min(s.x, s.z);
+                if (shorter > 0 && longer > shorter * 4 && s.y <= 6)
+                    continue;
+
                 Vector3 mn = new Vector3(
                     p.x - 0.5f, p.y, p.z - 0.5f);
                 Vector3 mx = new Vector3(

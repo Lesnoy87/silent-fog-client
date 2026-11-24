@@ -255,6 +255,20 @@ internal static class FogSettings
     public static float DynamicAmount = 0.60f;
     public static float DynamicSpeed = 0.45f;
 
+    // Вид у земли и у горизонта.
+    // GroundBlend 1 — подмес сцены у земли (как 1.29), 0 — чистый туман.
+    // SkyBand 0 — небо не туманится (как было), 1 — туман в полосе неба
+    // до ~12° над горизонтом (зенит не трогаем).
+    public static float GroundBlend = 1f;
+    public static float SkyBand = 0f;
+
+    // Слоистость: 0 — ровная стена, 1 — низкий слоистый туман (референсы).
+    public static float Layers = 0f;
+
+    // След: чистый волнистый коридор вдоль пройденного пути (маска плотности
+    // F *= 1 - M, радиус ~3.5 м). По умолчанию включён.
+    public static bool TrailOn = true;
+
     // Ночь орды: туман краснеет и плотнеет. HordeFog — сила эффекта 0..1.
     public static bool HordeFogOn = true;
     public static float HordeFog = 0.7f;
@@ -284,6 +298,10 @@ internal static class FogSettings
     public const string CvarDynamicOn = "sf_dynamic_on";
     public const string CvarDynamicAmount = "sf_dynamic_amount";
     public const string CvarDynamicSpeed = "sf_dynamic_speed";
+    public const string CvarGroundBlend = "sf_ground_blend";
+    public const string CvarSkyBand = "sf_sky_band";
+    public const string CvarTrailOn = "sf_trail_on";
+    public const string CvarLayers = "sf_layers";
 
     private static bool dirty;
     private static float nextSend;
@@ -381,6 +399,14 @@ internal static class FogSettings
             DynamicAmount = Clamp01(buffs.GetCustomVar(CvarDynamicAmount));
         if (buffs.HasCustomVar(CvarDynamicSpeed))
             DynamicSpeed = Clamp01(buffs.GetCustomVar(CvarDynamicSpeed));
+        if (buffs.HasCustomVar(CvarGroundBlend))
+            GroundBlend = Clamp01(buffs.GetCustomVar(CvarGroundBlend));
+        if (buffs.HasCustomVar(CvarSkyBand))
+            SkyBand = Clamp01(buffs.GetCustomVar(CvarSkyBand));
+        if (buffs.HasCustomVar(CvarLayers))
+            Layers = Clamp01(buffs.GetCustomVar(CvarLayers));
+        if (buffs.HasCustomVar(CvarTrailOn))
+            TrailOn = buffs.GetCustomVar(CvarTrailOn) >= 0.5f;
 
         // Внутри не должно быть плотнее, чем на улице.
         if (Indoor > Outdoor) Indoor = Outdoor;
@@ -483,6 +509,10 @@ internal static class FogSettings
             Send(player, CvarDynamicOn, DynamicOn ? 1f : 0f);
             Send(player, CvarDynamicAmount, DynamicAmount);
             Send(player, CvarDynamicSpeed, DynamicSpeed);
+            Send(player, CvarGroundBlend, GroundBlend);
+            Send(player, CvarSkyBand, SkyBand);
+            Send(player, CvarLayers, Layers);
+            Send(player, CvarTrailOn, TrailOn ? 1f : 0f);
         }
     }
 
@@ -516,6 +546,10 @@ internal static class FogSettings
         DynamicOn = true;
         DynamicAmount = 0.60f;
         DynamicSpeed = 0.45f;
+        GroundBlend = 1f;
+        SkyBand = 0f;
+        Layers = 0f;
+        TrailOn = true;
         MarkDirty();
     }
 
@@ -632,6 +666,13 @@ internal static class FogSettings
                     case "dynamic_on": DynamicOn = num >= 0.5f; break;
                     case "dynamic_amount": DynamicAmount = Clamp01(num); break;
                     case "dynamic_speed": DynamicSpeed = Clamp01(num); break;
+                    case "ground_blend": GroundBlend = Clamp01(num); break;
+                    case "sky_band": SkyBand = Clamp01(num); break;
+                    case "layers": Layers = Clamp01(num); break;
+                    // Ключ «trail», а не старый «trail_on»: 1.33.1–1.34.0
+                    // писали trail_on=0 при любом сохранении, и после
+                    // обновления след остался бы выключенным.
+                    case "trail": TrailOn = num >= 0.5f; break;
                 }
             }
         }
@@ -647,7 +688,7 @@ internal static class FogSettings
         {
             string text = string.Format(
                 System.Globalization.CultureInfo.InvariantCulture,
-                "enabled={0}\noutdoor={1}\nindoor={2}\nclosed={3}\nopen={4}\nstorm={5}\nstorm_density={6}\nnight_fog={7}\nshelter={8}\ndistance={9}\ndistance_start={10}\ndistance_end={11}\nbiome_tint={12}\nlive={13}\nlive_amount={14}\nhorde_on={15}\nhorde_fog={16}\ndynamic_on={17}\ndynamic_amount={18}\ndynamic_speed={19}\nforce={20}\n",
+                "enabled={0}\noutdoor={1}\nindoor={2}\nclosed={3}\nopen={4}\nstorm={5}\nstorm_density={6}\nnight_fog={7}\nshelter={8}\ndistance={9}\ndistance_start={10}\ndistance_end={11}\nbiome_tint={12}\nlive={13}\nlive_amount={14}\nhorde_on={15}\nhorde_fog={16}\ndynamic_on={17}\ndynamic_amount={18}\ndynamic_speed={19}\nforce={20}\nground_blend={21}\nsky_band={22}\ntrail={23}\nlayers={24}\n",
                 Enabled ? "1" : "0", Outdoor, Indoor, ClosedVehicle, OpenVehicle,
                 StormEnabled ? "1" : "0", StormDensity, NightSoftening,
                 UseShelter ? "1" : "0",
@@ -655,7 +696,8 @@ internal static class FogSettings
                 LiveOn ? "1" : "0", LiveAmount,
                 HordeFogOn ? "1" : "0", HordeFog,
                 DynamicOn ? "1" : "0", DynamicAmount, DynamicSpeed,
-                ForceForClients ? "1" : "0");
+                ForceForClients ? "1" : "0", GroundBlend, SkyBand,
+                TrailOn ? "1" : "0", Layers);
             File.WriteAllText(SettingsPath, text);
         }
         catch
@@ -1879,7 +1921,7 @@ public class FogMenuBehaviour : MonoBehaviour
     {
         // Запас под содержимое вкладки: скролл не должен обрезать хвост.
         if (t == 0) return 560f;
-        if (t == 1) return 700f;
+        if (t == 1) return 1030f;
         return 300f;
     }
 
@@ -2033,6 +2075,42 @@ public class FogMenuBehaviour : MonoBehaviour
             GUI.enabled = wasEnabled;
         }
 
+        // --- вид у земли и у неба ---
+        GUI.enabled = host && FogSettings.Enabled;
+        GUI.DrawTexture(new Rect(18f, y, w - 36f, 1f), rowTex, ScaleMode.StretchToFill);
+        y += 10f;
+        GUI.Label(new Rect(18f, y, w - 36f, 20f), "ВИД У ЗЕМЛИ И У НЕБА", sectionStyle);
+        y += 24f;
+        y = DrawRow(y, w, "Подмес сцены у земли", ref FogSettings.GroundBlend);
+        y = DrawRow(y, w, "Туман в небе у горизонта", ref FogSettings.SkyBand);
+        y = DrawRow(y, w, "Слоистость тумана", ref FogSettings.Layers);
+        GUI.Label(new Rect(18f, y - 6f, w - 36f, 46f),
+            "Земля: 100 % — как в 1.29 (убирает «колпак» у ног), 0 % — чистый туман. "
+            + "Небо: 0 % — небо чистое, 100 % — полоса до 12° над горизонтом. "
+            + "Слоистость: 0 — ровная стена, 100 — низкий слоистый туман, верхушки деревьев выходят.",
+            hintStyle);
+        y += 44f;
+
+        // --- след ---
+        GUI.DrawTexture(new Rect(18f, y, w - 36f, 1f), rowTex, ScaleMode.StretchToFill);
+        y += 10f;
+        GUI.Label(new Rect(18f, y, w - 36f, 20f), "СЛЕД ТУМАНА", sectionStyle);
+        y += 24f;
+        {
+            bool was = FogSettings.TrailOn;
+            GUI.enabled = host && FogSettings.Enabled;
+            FogSettings.TrailOn = DrawToggle(
+                new Rect(18f, y, w - 36f, 22f), FogSettings.TrailOn,
+                "След тумана (коридор за спиной)");
+            if (was != FogSettings.TrailOn) FogSettings.MarkDirty();
+        }
+        y += 28f;
+        GUI.Label(new Rect(18f, y - 6f, w - 36f, 46f),
+            "За игроком остаётся чистый волнистый коридор шириной ~7 м, "
+            + "он затягивается за ~3.5 с. Круг впереди не меняется. Идёт от хоста.",
+            hintStyle);
+        y += 44f;
+
         // --- пепельная буря ---
         GUI.DrawTexture(new Rect(18f, y, w - 36f, 1f), rowTex, ScaleMode.StretchToFill);
         y += 10f;
@@ -2139,6 +2217,15 @@ public class FogMenuBehaviour : MonoBehaviour
         GUI.Label(new Rect(18f, y, w - 36f, 20f),
             string.Format("зоны: статика {0} · база {1} · слоты {2}",
                 FogObstacles.StaticCount, FogObstacles.BaseCount, FogObstacles.Count),
+            hintStyle);
+        y += 20f;
+
+        GUI.Label(new Rect(18f, y, w - 36f, 20f),
+            string.Format("след: {0} · скор {1}% · r {2:0.0} м · обновлений {3}/с",
+                DistanceFog.TrailCountNow,
+                Mathf.RoundToInt(DistanceFog.TrailSpeedNow * 100f),
+                DistanceFog.TrailRadiusNow,
+                DistanceFog.ApplyPerSecond),
             hintStyle);
         y += 20f;
 
